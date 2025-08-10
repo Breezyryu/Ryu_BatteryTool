@@ -106,25 +106,20 @@ class BatteryPatternAnalyzer:
         """
         path_str = str(data_path).replace('/', '\\').replace('//', '\\')
         
+        # 경로 존재 여부 확인
+        path_obj = Path(path_str)
+        if not path_obj.exists():
+            logger.warning(f"경로가 존재하지 않습니다: {data_path}")
+        else:
+            logger.info(f"경로 확인됨: {data_path}")
+        
         # 용량 정보 추출 (mAh)
         capacity_pattern = r'(\d+)mAh'
         capacity_match = re.search(capacity_pattern, path_str)
         capacity_mah = int(capacity_match.group(1)) if capacity_match else 4800
         
-        # 장비 타입 판별
-        if 'pne' in path_str.lower():
-            equipment_type = 'PNE'
-        elif 'toyo' in path_str.lower():
-            equipment_type = 'Toyo'
-        else:
-            # 폴더 구조로 판별
-            path_obj = Path(path_str)
-            if any(p.name.startswith('M01Ch') for p in path_obj.rglob('*')):
-                equipment_type = 'PNE'
-            elif any(p.name == 'CAPACITY.LOG' for p in path_obj.rglob('*')):
-                equipment_type = 'Toyo'
-            else:
-                equipment_type = 'Unknown'
+        # 개선된 장비 타입 판별
+        equipment_type = self._determine_equipment_type_enhanced(data_path)
         
         # 기타 정보 추출
         battery_info = {
@@ -198,9 +193,125 @@ class BatteryPatternAnalyzer:
             else:
                 return 'Unknown'
     
+    def _determine_equipment_type_enhanced(self, data_path: str) -> str:
+        """
+        개선된 장비 타입 감지
+        
+        Args:
+            data_path: 데이터 경로
+            
+        Returns:
+            장비 타입 ('PNE' 또는 'Toyo')
+        """
+        path_str = str(data_path).lower()
+        path_obj = Path(data_path)
+        
+        logger.info(f"장비 타입 감지 시작: {data_path}")
+        
+        # 1단계: 경로명으로 판별
+        if any(keyword in path_str for keyword in ['pne', 'lges', 'samsung']):
+            logger.info("경로명 기반으로 PNE 감지")
+            return 'PNE'
+        elif any(keyword in path_str for keyword in ['toyo', 'toyo_sic']):
+            logger.info("경로명 기반으로 Toyo 감지")
+            return 'Toyo'
+        
+        # 2단계: 실제 파일 구조 검사
+        if path_obj.exists():
+            if self._has_pne_structure(path_obj):
+                logger.info("파일 구조 기반으로 PNE 감지")
+                return 'PNE'
+            elif self._has_toyo_structure(path_obj):
+                logger.info("파일 구조 기반으로 Toyo 감지")
+                return 'Toyo'
+        else:
+            logger.warning(f"경로가 존재하지 않습니다: {data_path}")
+        
+        # 3단계: 기본값 (PNE로 시도)
+        logger.warning(f"장비 타입을 확정할 수 없어 PNE로 시도합니다: {data_path}")
+        return 'PNE'
+    
+    def _has_pne_structure(self, path_obj: Path) -> bool:
+        """
+        PNE 구조 확인
+        
+        Args:
+            path_obj: 경로 객체
+            
+        Returns:
+            PNE 구조 여부
+        """
+        try:
+            # PNE 특징 확인
+            pne_indicators = []
+            
+            # M01Ch### 폴더 존재 확인
+            m01ch_folders = list(path_obj.rglob('M01Ch*'))
+            if m01ch_folders:
+                pne_indicators.append(True)
+                logger.debug(f"M01Ch 폴더 발견: {len(m01ch_folders)}개")
+            
+            # Restore 폴더 존재 확인
+            restore_folders = list(path_obj.rglob('Restore'))
+            if restore_folders:
+                pne_indicators.append(True)
+                logger.debug(f"Restore 폴더 발견: {len(restore_folders)}개")
+            
+            # SaveData 파일 존재 확인
+            savedata_files = list(path_obj.rglob('*SaveData*.csv'))
+            if savedata_files:
+                pne_indicators.append(True)
+                logger.debug(f"SaveData 파일 발견: {len(savedata_files)}개")
+            
+            # 최소 2개 이상의 PNE 특징이 있어야 함
+            return len(pne_indicators) >= 2
+            
+        except Exception as e:
+            logger.error(f"PNE 구조 확인 중 오류: {e}")
+            return False
+    
+    def _has_toyo_structure(self, path_obj: Path) -> bool:
+        """
+        Toyo 구조 확인
+        
+        Args:
+            path_obj: 경로 객체
+            
+        Returns:
+            Toyo 구조 여부
+        """
+        try:
+            # Toyo 특징 확인
+            toyo_indicators = []
+            
+            # CAPACITY.LOG 파일 존재 확인
+            capacity_logs = list(path_obj.rglob('CAPACITY.LOG'))
+            if capacity_logs:
+                toyo_indicators.append(True)
+                logger.debug(f"CAPACITY.LOG 파일 발견: {len(capacity_logs)}개")
+            
+            # 숫자 파일들 존재 확인 (000001, 000002 등)
+            numeric_files = [f for f in path_obj.rglob('*') if f.is_file() and f.name.isdigit()]
+            if len(numeric_files) > 5:  # 최소 5개 이상
+                toyo_indicators.append(True)
+                logger.debug(f"숫자 파일 발견: {len(numeric_files)}개")
+            
+            # 6자리 숫자 파일 확인
+            six_digit_files = [f for f in path_obj.rglob('*') if f.is_file() and re.match(r'^\d{6}$', f.name)]
+            if six_digit_files:
+                toyo_indicators.append(True)
+                logger.debug(f"6자리 숫자 파일 발견: {len(six_digit_files)}개")
+            
+            # 최소 2개 이상의 Toyo 특징이 있어야 함
+            return len(toyo_indicators) >= 2
+            
+        except Exception as e:
+            logger.error(f"Toyo 구조 확인 중 오류: {e}")
+            return False
+    
     def load_and_concatenate_data(self, data_path: str) -> pd.DataFrame:
         """
-        데이터 로드 및 파일 연결
+        데이터 로드 및 파일 연결 (향상된 오류 처리 및 fallback 메커니즘 포함)
         
         Args:
             data_path: 데이터 경로
@@ -211,38 +322,210 @@ class BatteryPatternAnalyzer:
         path_obj = Path(data_path)
         combined_data = pd.DataFrame()
         
+        logger.info(f"데이터 로드 시작: {data_path}")
+        logger.info(f"감지된 장비 타입: {self.equipment_type}")
+        
+        if not path_obj.exists():
+            logger.error(f"경로가 존재하지 않습니다: {data_path}")
+            return combined_data
+        
+        # 파일 개수 확인
+        all_files = list(path_obj.rglob('*'))
+        logger.info(f"총 파일/폴더 수: {len(all_files)}")
+        
         if self.equipment_type == 'PNE':
-            # PNE 데이터 처리
-            restore_folders = list(path_obj.rglob('Restore'))
-            
-            for restore_folder in restore_folders:
-                # SaveData 파일들 로드
-                save_data_files = sorted([f for f in restore_folder.glob("*_SaveData*.csv")])
-                
-                for file_path in save_data_files:
-                    try:
-                        # 탭 구분자로 로드, 헤더 없음
-                        df = pd.read_csv(file_path, sep='\t', header=None, 
-                                       names=self.pne_columns, low_memory=False)
+            combined_data = self._load_pne_data_enhanced(path_obj, combined_data)
                         
+        elif self.equipment_type == 'Toyo':
+            combined_data = self._load_toyo_data_enhanced(path_obj, combined_data)
+        
+        else:  # equipment_type == 'Unknown' 또는 기타
+            logger.warning(f"알 수 없는 장비 타입: {self.equipment_type}")
+            # Fallback: 두 방식 모두 시도
+            logger.info("PNE 형식으로 먼저 시도합니다...")
+            combined_data = self._load_pne_data_enhanced(path_obj, combined_data)
+            
+            if combined_data.empty:
+                logger.info("PNE 형식 실패, Toyo 형식으로 시도합니다...")
+                combined_data = self._load_toyo_data_enhanced(path_obj, combined_data)
+        
+        if combined_data.empty:
+            logger.error("어떤 데이터도 로드되지 않았습니다")
+        else:
+            logger.info(f"최종 로드된 데이터: {len(combined_data):,} 행, {len(combined_data.columns)} 열")
+            
+        return combined_data
+    
+    def _load_pne_data_enhanced(self, path_obj: Path, combined_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        향상된 PNE 데이터 로드
+        
+        Args:
+            path_obj: 경로 객체
+            combined_data: 기존 데이터프레임
+            
+        Returns:
+            로드된 데이터프레임
+        """
+        logger.info("PNE 데이터 로드 시도...")
+        
+        # 1단계: Restore 폴더에서 SaveData 파일 찾기
+        restore_folders = list(path_obj.rglob('Restore'))
+        logger.info(f"Restore 폴더 발견: {len(restore_folders)}개")
+        
+        files_loaded = 0
+        
+        for restore_folder in restore_folders:
+            logger.debug(f"Restore 폴더 처리 중: {restore_folder}")
+            
+            # SaveData 파일들 찾기
+            save_data_files = sorted([f for f in restore_folder.glob("*_SaveData*.csv")])
+            logger.info(f"{restore_folder.name}에서 SaveData 파일 발견: {len(save_data_files)}개")
+            
+            for file_path in save_data_files[:50]:  # 최대 50개 파일만 로드
+                try:
+                    # 다양한 구분자로 시도
+                    df = self._try_read_csv_multiple_separators(file_path, self.pne_columns)
+                    
+                    if df is not None and not df.empty:
                         # 데이터 변환
                         self._convert_pne_data(df)
                         
                         # 파일 정보 추가
                         df['source_file'] = file_path.name
                         df['channel'] = restore_folder.parent.name
+                        df['equipment_type'] = 'PNE'
                         
                         combined_data = pd.concat([combined_data, df], ignore_index=True)
-                        logger.info(f"로드됨: {file_path.name} - {len(df)} 행")
-                        
-                    except Exception as e:
-                        logger.error(f"파일 로드 실패 {file_path.name}: {e}")
-                        
-        elif self.equipment_type == 'Toyo':
-            # Toyo 데이터 처리
-            combined_data = self._load_toyo_data(path_obj, combined_data)
+                        files_loaded += 1
+                        logger.info(f"로드됨: {file_path.name} - {len(df):,} 행")
+                    
+                except Exception as e:
+                    logger.error(f"파일 로드 실패 {file_path.name}: {e}")
+        
+        # 2단계: Restore 폴더가 없거나 데이터가 없으면 직접 CSV 파일 찾기
+        if combined_data.empty:
+            logger.info("Restore 폴더에서 데이터를 찾을 수 없어 직접 CSV 파일을 찾습니다...")
+            csv_files = list(path_obj.rglob('*.csv'))[:20]  # 최대 20개 파일
+            logger.info(f"CSV 파일 발견: {len(csv_files)}개")
             
+            for file_path in csv_files:
+                try:
+                    df = self._try_read_csv_multiple_separators(file_path, self.pne_columns)
+                    
+                    if df is not None and not df.empty and len(df.columns) >= 10:
+                        self._convert_pne_data(df)
+                        df['source_file'] = file_path.name
+                        df['equipment_type'] = 'PNE'
+                        
+                        combined_data = pd.concat([combined_data, df], ignore_index=True)
+                        files_loaded += 1
+                        logger.info(f"직접 로드됨: {file_path.name} - {len(df):,} 행")
+                        
+                        if files_loaded >= 10:  # 최대 10개 파일
+                            break
+                
+                except Exception as e:
+                    logger.error(f"직접 파일 로드 실패 {file_path.name}: {e}")
+        
+        logger.info(f"PNE 데이터 로드 완료: {files_loaded}개 파일, {len(combined_data):,} 행")
         return combined_data
+    
+    def _load_toyo_data_enhanced(self, path_obj: Path, combined_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        향상된 Toyo 데이터 로드
+        
+        Args:
+            path_obj: 경로 객체
+            combined_data: 기존 데이터프레임
+            
+        Returns:
+            로드된 데이터프레임
+        """
+        logger.info("Toyo 데이터 로드 시도...")
+        
+        # 1단계: CAPACITY.LOG 파일 로드
+        capacity_files = list(path_obj.rglob('CAPACITY.LOG'))
+        logger.info(f"CAPACITY.LOG 파일 발견: {len(capacity_files)}개")
+        
+        files_loaded = 0
+        
+        for capacity_file in capacity_files:
+            try:
+                df = self._try_read_csv_multiple_separators(capacity_file)
+                
+                if df is not None and not df.empty:
+                    df['source_file'] = 'CAPACITY.LOG'
+                    df['equipment_type'] = 'Toyo'
+                    
+                    # mAh를 Ah로 변환
+                    if 'Cap[mAh]' in df.columns:
+                        df['Chg_Capacity[Ah]'] = df['Cap[mAh]'] / 1000
+                        df['Dchg_Capacity[Ah]'] = df['Cap[mAh]'] / 1000
+                    
+                    combined_data = pd.concat([combined_data, df], ignore_index=True)
+                    files_loaded += 1
+                    logger.info(f"로드됨: CAPACITY.LOG - {len(df):,} 행")
+                    
+            except Exception as e:
+                logger.error(f"CAPACITY.LOG 로드 실패: {e}")
+        
+        # 2단계: 숫자 파일들 로드 (최대 10개)
+        measurement_files = sorted([f for f in path_obj.rglob('*') 
+                                  if f.is_file() and f.name.isdigit()])[:10]
+        logger.info(f"숫자 측정 파일 발견: {len(measurement_files)}개")
+        
+        for file_path in measurement_files:
+            try:
+                df = self._try_read_csv_multiple_separators(file_path)
+                
+                if df is not None and not df.empty:
+                    df['source_file'] = file_path.name
+                    df['equipment_type'] = 'Toyo'
+                    
+                    combined_data = pd.concat([combined_data, df], ignore_index=True)
+                    files_loaded += 1
+                    logger.info(f"로드됨: {file_path.name} - {len(df):,} 행")
+                    
+            except Exception as e:
+                logger.error(f"숫자 파일 로드 실패 {file_path.name}: {e}")
+        
+        logger.info(f"Toyo 데이터 로드 완료: {files_loaded}개 파일, {len(combined_data):,} 행")
+        return combined_data
+    
+    def _try_read_csv_multiple_separators(self, file_path: Path, columns: List[str] = None) -> Optional[pd.DataFrame]:
+        """
+        다양한 구분자로 CSV 파일 읽기 시도
+        
+        Args:
+            file_path: 파일 경로
+            columns: 컬럼명 리스트 (옵션)
+            
+        Returns:
+            데이터프레임 또는 None
+        """
+        separators = ['\t', ',', ';', ' ']  # 시도할 구분자들
+        encodings = ['utf-8', 'cp949', 'euc-kr', 'latin1']  # 시도할 인코딩들
+        
+        for encoding in encodings:
+            for sep in separators:
+                try:
+                    if columns:
+                        df = pd.read_csv(file_path, sep=sep, header=None, 
+                                       names=columns, low_memory=False, encoding=encoding)
+                    else:
+                        df = pd.read_csv(file_path, sep=sep, low_memory=False, encoding=encoding)
+                    
+                    # 데이터가 제대로 로드되었는지 확인
+                    if not df.empty and len(df.columns) >= 3:
+                        logger.debug(f"성공적으로 로드됨: {file_path.name} (구분자: '{sep}', 인코딩: {encoding})")
+                        return df
+                        
+                except Exception:
+                    continue
+        
+        logger.warning(f"모든 구분자/인코딩 조합으로 로드 실패: {file_path.name}")
+        return None
     
     def _convert_pne_data(self, df: pd.DataFrame):
         """PNE 데이터 변환"""
@@ -266,60 +549,6 @@ class BatteryPatternAnalyzer:
         if 'StepTime[1/100s]' in df.columns:
             df['Time[s]'] = pd.to_numeric(df['StepTime[1/100s]'], errors='coerce') / 100
     
-    def _load_toyo_data(self, path_obj: Path, combined_data: pd.DataFrame):
-        """Toyo 데이터 로드"""
-        # CAPACITY.LOG 로드
-        capacity_files = list(path_obj.rglob('CAPACITY.LOG'))
-        
-        for capacity_file in capacity_files:
-            try:
-                capacity_df = pd.read_csv(capacity_file)
-                capacity_df['source_file'] = 'CAPACITY.LOG'
-                capacity_df['equipment_type'] = 'Toyo'
-                
-                # mAh를 Ah로 변환
-                if 'Cap[mAh]' in capacity_df.columns:
-                    capacity_df['Cap[Ah]'] = capacity_df['Cap[mAh]'] / 1000
-                
-                combined_data = pd.concat([combined_data, capacity_df], ignore_index=True)
-                logger.info(f"로드됨: CAPACITY.LOG - {len(capacity_df)} 행")
-                
-            except Exception as e:
-                logger.error(f"CAPACITY.LOG 로드 실패: {e}")
-        
-        # 개별 측정 파일들 로드 (선택적으로 몇 개만)
-        measurement_files = sorted([f for f in path_obj.rglob('*') 
-                                  if f.is_file() and f.name.isdigit()])[:10]
-        
-        for file_path in measurement_files:
-            try:
-                # 헤더 찾기
-                with open(file_path, 'r') as f:
-                    lines = f.readlines()
-                
-                header_line = None
-                for i, line in enumerate(lines):
-                    if 'Date,Time' in line:
-                        header_line = i
-                        break
-                
-                if header_line is not None:
-                    df = pd.read_csv(file_path, skiprows=header_line)
-                    
-                    # 전압/전류 변환
-                    if 'Voltage[V]' in df.columns:
-                        df['Voltage[V]'] = pd.to_numeric(df['Voltage[V]'], errors='coerce')
-                    if 'Current[mA]' in df.columns:
-                        df['Current[mA]'] = pd.to_numeric(df['Current[mA]'], errors='coerce')
-                        df['Current[A]'] = df['Current[mA]'] / 1000
-                    
-                    df['source_file'] = file_path.name
-                    combined_data = pd.concat([combined_data, df], ignore_index=True)
-                    
-            except Exception as e:
-                print(f"측정 파일 로드 실패 {file_path.name}: {e}")
-                
-        return combined_data
     
     def load_and_concatenate_multi_paths(self, data_paths: List[str]) -> pd.DataFrame:
         """
@@ -1371,77 +1600,178 @@ class BatteryPatternAnalyzer:
 
     def _run_single_path_analysis(self, data_path: str, output_path: str = "analysis_output") -> Dict[str, Any]:
         """
-        단일 경로 분석 실행
+        단일 경로 분석 실행 (향상된 로깅 및 디버깅 포함)
         
         Args:
             data_path: 데이터 경로
-            output_dir: 출력 디렉토리
+            output_path: 출력 디렉토리
             
         Returns:
             분석 결과
         """
-        print(f"배터리 패턴 분석 시작: {data_path}")
+        logger.info("="*80)
+        logger.info(f"배터리 패턴 분석 시작: {data_path}")
+        logger.info("="*80)
         
-        # 1. 경로에서 배터리 정보 추출
-        self.capacity_info = self.extract_capacity_from_path(data_path)
-        print(f"배터리 정보: {self.capacity_info}")
+        analysis_start_time = datetime.now()
+        self.data_path = data_path
         
-        # 2. 장비 타입 감지
-        self.equipment_type = self.detect_equipment_type(data_path)
-        self.capacity_info['equipment_type'] = self.equipment_type
-        print(f"감지된 장비 타입: {self.equipment_type}")
-        
-        # 3. 데이터 로드 및 연결
-        print("\n데이터 로딩 중...")
-        combined_data = self.load_and_concatenate_data(data_path)
-        
-        if len(combined_data) == 0:
-            print("로드된 데이터가 없습니다.")
-            return {}
-        
-        print(f"총 {len(combined_data):,}행의 데이터가 로드되었습니다.")
-        
-        # 4. 패턴 분석
-        print("\n패턴 분석 중...")
-        patterns = self.analyze_cycle_patterns(combined_data)
-        
-        # 5. 결과 출력
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
-        
-        # CSV 출력
-        csv_file = self.generate_processed_csv(
-            combined_data, 
-            str(output_path / "processed_data.csv")
-        )
-        
-        # 보고서 생성
-        report_content = self.generate_analysis_report(
-            patterns, 
-            str(output_path / "analysis_report.txt")
-        )
-        
-        # 시각화 생성
-        self.create_visualizations(combined_data, patterns, str(output_path / "visualizations"))
-        
-        # 결과 반환
-        result = {
-            'battery_info': self.capacity_info,
-            'patterns': patterns,
-            'data_summary': {
-                'total_rows': len(combined_data),
-                'equipment_type': self.equipment_type,
-                'output_files': {
-                    'csv': csv_file,
-                    'report': str(output_path / "analysis_report.txt"),
-                    'visualizations': str(output_path / "visualizations")
+        try:
+            # 1. 경로에서 배터리 정보 추출
+            logger.info("1단계: 경로에서 배터리 정보 추출 중...")
+            self.capacity_info = self.extract_capacity_from_path(data_path)
+            logger.info(f"추출된 배터리 정보:")
+            for key, value in self.capacity_info.items():
+                logger.info(f"  • {key}: {value}")
+            
+            # 2. 장비 타입 감지 (새로운 enhanced 버전 사용)
+            logger.info("2단계: 장비 타입 감지 중...")
+            self.equipment_type = self.capacity_info.get('equipment_type', 'Unknown')
+            logger.info(f"최종 감지된 장비 타입: {self.equipment_type}")
+            
+            # 디버깅 정보: 경로 구조 간략 표시
+            self._log_path_structure_summary(data_path)
+            
+            # 3. 데이터 로드 및 연결
+            logger.info("3단계: 데이터 로드 및 연결 중...")
+            combined_data = self.load_and_concatenate_data(data_path)
+            
+            if len(combined_data) == 0:
+                logger.error("❌ 로드된 데이터가 없습니다!")
+                logger.error("가능한 원인:")
+                logger.error("  1. 잘못된 데이터 경로")
+                logger.error("  2. 지원되지 않는 데이터 형식") 
+                logger.error("  3. 손상된 데이터 파일")
+                logger.error("  4. 장비 타입 감지 오류")
+                
+                return {
+                    'error': 'No data loaded',
+                    'battery_info': self.capacity_info,
+                    'debug_info': {
+                        'equipment_type': self.equipment_type,
+                        'data_path': data_path,
+                        'path_exists': Path(data_path).exists()
+                    }
+                }
+            
+            logger.info(f"✅ 총 {len(combined_data):,}행의 데이터가 성공적으로 로드되었습니다.")
+            logger.info(f"데이터 컬럼 수: {len(combined_data.columns)}")
+            logger.info(f"주요 컬럼: {list(combined_data.columns[:10])}")
+            
+            # 4. 패턴 분석
+            logger.info("4단계: 사이클 패턴 분석 중...")
+            patterns = self.analyze_cycle_patterns(combined_data)
+            logger.info(f"패턴 분석 완료: {len(patterns)} 개의 패턴 유형 감지")
+            
+            # 5. 결과 출력
+            logger.info("5단계: 결과 파일 생성 중...")
+            output_path = Path(output_path)
+            output_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"출력 디렉토리: {output_path}")
+            
+            # CSV 출력
+            csv_file = self.generate_processed_csv(
+                combined_data, 
+                str(output_path / "processed_data.csv")
+            )
+            logger.info(f"CSV 파일 생성됨: {csv_file}")
+            
+            # 보고서 생성
+            report_file = str(output_path / "analysis_report.txt")
+            report_content = self.generate_analysis_report(patterns, report_file)
+            logger.info(f"분석 보고서 생성됨: {report_file}")
+            
+            # 시각화 생성
+            viz_dir = str(output_path / "visualizations")
+            self.create_visualizations(combined_data, patterns, viz_dir)
+            logger.info(f"시각화 파일들 생성됨: {viz_dir}")
+            
+            # 분석 시간 계산
+            analysis_duration = datetime.now() - analysis_start_time
+            logger.info(f"총 분석 시간: {analysis_duration}")
+            
+            # 결과 반환
+            result = {
+                'battery_info': self.capacity_info,
+                'patterns': patterns,
+                'data': combined_data,  # 데이터도 포함
+                'data_summary': {
+                    'total_rows': len(combined_data),
+                    'total_columns': len(combined_data.columns),
+                    'equipment_type': self.equipment_type,
+                    'analysis_duration': str(analysis_duration),
+                    'output_files': {
+                        'csv': csv_file,
+                        'report': report_file,
+                        'visualizations': viz_dir
+                    }
                 }
             }
-        }
+            
+            logger.info("="*80)
+            logger.info("✅ 분석 완료!")
+            logger.info(f"결과 저장 위치: {output_path}")
+            logger.info("="*80)
+            
+            return result
+            
+        except Exception as e:
+            logger.error("="*80)
+            logger.error(f"❌ 분석 중 오류 발생: {str(e)}")
+            logger.error("="*80)
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            return {
+                'error': str(e),
+                'battery_info': getattr(self, 'capacity_info', {}),
+                'equipment_type': getattr(self, 'equipment_type', 'Unknown'),
+                'debug_info': {
+                    'data_path': data_path,
+                    'analysis_duration': str(datetime.now() - analysis_start_time)
+                }
+            }
+    
+    def _log_path_structure_summary(self, data_path: str):
+        """
+        경로 구조 요약 로그 출력
         
-        print(f"\n분석 완료! 결과는 '{output_path}' 폴더에 저장되었습니다.")
-        
-        return result
+        Args:
+            data_path: 데이터 경로
+        """
+        try:
+            path_obj = Path(data_path)
+            if not path_obj.exists():
+                logger.warning(f"경로가 존재하지 않음: {data_path}")
+                return
+            
+            # 하위 디렉토리 개수
+            dirs = [p for p in path_obj.rglob('*') if p.is_dir()]
+            files = [p for p in path_obj.rglob('*') if p.is_file()]
+            csv_files = [p for p in path_obj.rglob('*.csv')]
+            
+            logger.info(f"경로 구조 요약:")
+            logger.info(f"  • 총 디렉토리: {len(dirs)}개")
+            logger.info(f"  • 총 파일: {len(files)}개")
+            logger.info(f"  • CSV 파일: {len(csv_files)}개")
+            
+            # 특징적인 폴더/파일 확인
+            restore_folders = [p for p in dirs if 'restore' in p.name.lower()]
+            m01ch_folders = [p for p in dirs if p.name.startswith('M01Ch')]
+            capacity_logs = [p for p in files if p.name == 'CAPACITY.LOG']
+            numeric_files = [p for p in files if p.name.isdigit()]
+            
+            if restore_folders:
+                logger.info(f"  • Restore 폴더: {len(restore_folders)}개")
+            if m01ch_folders:
+                logger.info(f"  • M01Ch 폴더: {len(m01ch_folders)}개")
+            if capacity_logs:
+                logger.info(f"  • CAPACITY.LOG 파일: {len(capacity_logs)}개")
+            if numeric_files:
+                logger.info(f"  • 숫자 파일: {len(numeric_files)}개")
+                
+        except Exception as e:
+            logger.warning(f"경로 구조 요약 실패: {e}")
 
 def main():
     """메인 실행 함수"""

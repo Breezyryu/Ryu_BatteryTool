@@ -160,6 +160,13 @@ class IntegratedBatteryReporter:
             )
             self.analysis_metadata['analysis_modules'].append('Statistical Analysis')
             
+            # Pass battery info to all visualizers if available
+            if self.battery_info:
+                for visualizer_name, visualizer in self.visualizers.items():
+                    if hasattr(visualizer, 'battery_info'):
+                        visualizer.battery_info = self.battery_info
+                        logger.debug(f"Battery info passed to {visualizer_name} visualizer")
+            
             logger.info(f"Successfully initialized {len(self.visualizers)} visualization modules")
             return True
             
