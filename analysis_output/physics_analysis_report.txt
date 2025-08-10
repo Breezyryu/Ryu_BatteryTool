@@ -1,0 +1,67 @@
+================================================================================
+BATTERY PHYSICS ANALYSIS REPORT
+================================================================================
+Analysis Date: 2025-08-10 12:23:32
+Temperature: 298.1 K (25.0 °C)
+Battery System: SiC+Graphite / LCO
+
+----------------------------------------
+THERMODYNAMIC ANALYSIS
+----------------------------------------
+Average entropy change: -55.5 J/mol·K
+Average enthalpy change: -378076 J/mol
+Average Gibbs free energy: -361538 J/mol
+Temperature coefficient: -0.57 mV/K
+
+----------------------------------------
+ACTIVATION ENERGY ANALYSIS
+----------------------------------------
+Charge transfer activation energy: 40.0 kJ/mol
+Diffusion activation energy: 20.0 kJ/mol
+Capacity fade activation energy: 80.0 kJ/mol
+
+----------------------------------------
+DIFFUSION ANALYSIS
+----------------------------------------
+Apparent diffusion coefficient: 2.53e-11 m²/s
+Anode (SiC+Graphite) diffusion: 7.60e-12 m²/s
+Cathode (LCO) diffusion: 3.80e-11 m²/s
+
+----------------------------------------
+CHARGE TRANSFER KINETICS
+----------------------------------------
+Exchange current density: 9.30e-02 A/m²
+Charge transfer resistance: 1.017 Ω
+Average overpotential: 41.9 mV
+
+----------------------------------------
+SiC VOLUME EXPANSION ANALYSIS
+----------------------------------------
+Maximum volume expansion: 15.2%
+Average stress generation: 25351.8 MPa
+Particle fracture indicator: 1.051
+Enhanced SEI growth rate: 0.011 nm/cycle
+
+----------------------------------------
+SEI FORMATION ANALYSIS
+----------------------------------------
+Final SEI thickness: 0.0 nm
+SEI resistance: 0.00e+00 Ω·m²
+SEI composition:
+  Li2CO3: 40.0%
+  LiF: 20.0%
+  Li2O: 10.0%
+  organic_polymers: 20.0%
+  SiOx: 10.0%
+
+----------------------------------------
+IMPEDANCE ANALYSIS
+----------------------------------------
+Solution resistance (Rs): 50.0 mOhm
+Charge transfer resistance (Rct): 100.0 mOhm
+Double layer capacitance: 100 uF
+Warburg coefficient: 0.010 Ohm*s^-0.5
+
+================================================================================
+END OF PHYSICS REPORT
+================================================================================

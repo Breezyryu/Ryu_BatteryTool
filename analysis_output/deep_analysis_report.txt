@@ -1,0 +1,71 @@
+================================================================================
+DEEP BATTERY ANALYSIS REPORT
+================================================================================
+Analysis Date: 2025-08-10 11:56:56
+Total Data Points: 1,188,410
+Total Cycles Analyzed: 1200
+
+----------------------------------------
+INCREMENTAL CAPACITY ANALYSIS (ICA)
+----------------------------------------
+Cycles analyzed: 100
+Average peaks per cycle: 6.0
+Peak voltage shift: -0.456V
+
+----------------------------------------
+DIFFERENTIAL VOLTAGE ANALYSIS (DVA)
+----------------------------------------
+Cycles analyzed: 100
+Phase transitions detected: 100
+
+----------------------------------------
+STATE OF HEALTH (SOH)
+----------------------------------------
+Current SOH: 156.4%
+Capacity-based SOH: 100.0%
+Resistance-based SOH: 404.0%
+Voltage-based SOH: 77.9%
+
+----------------------------------------
+INTERNAL RESISTANCE
+----------------------------------------
+Initial resistance: 18.86 mΩ
+Current resistance: 21.10 mΩ
+Resistance increase: 11.9%
+
+----------------------------------------
+CAPACITY FADE MODELING
+----------------------------------------
+
+----------------------------------------
+EFFICIENCY ANALYSIS
+----------------------------------------
+Average Coulombic Efficiency: 0.00%
+Average Energy Efficiency: nan%
+
+----------------------------------------
+ANOMALY DETECTION
+----------------------------------------
+Anomalous cycles detected: 25
+Anomalous cycles: [np.int64(1), np.int64(2), np.int64(3), np.int64(4), np.int64(8), np.int64(11), np.int64(101), np.int64(102), np.int64(103), np.int64(104)]
+
+----------------------------------------
+PATTERN CLUSTERING
+----------------------------------------
+Number of clusters: 5
+  cluster_0: 45 cycles
+  cluster_1: 4 cycles
+  cluster_2: 59 cycles
+  cluster_3: 90 cycles
+  cluster_4: 2 cycles
+
+----------------------------------------
+SiC ANODE CHARACTERISTICS
+----------------------------------------
+  Cycle 1: Plateau at 3.309V, capacity 0.000Ah
+  Cycle 10: Plateau at 3.286V, capacity 0.006Ah
+  Cycle 100: Plateau at 3.289V, capacity 0.006Ah
+
+================================================================================
+END OF REPORT
+================================================================================

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx:*)",
+      "Bash(mkdir:*)",
+      "Bash(python:*)",
+      "Bash(rm:*)",
+      "Bash(grep:*)",
+      "Bash(start_battery_analyzer.bat)",
+      "Bash(del \"C:\\Users\\Ryu\\Ryu_BatteryTool\\battery_analyzer_gui.py\")"
+    ],
+    "deny": []
+  }
+}
