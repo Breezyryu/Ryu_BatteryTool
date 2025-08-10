@@ -20,13 +20,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 import traceback
 
-# Import all visualization modules
+# Import core visualization modules
 try:
     from enhanced_seaborn_visualizer import EnhancedSeabornVisualizer
     from battery_domain_visualizer import BatteryDomainVisualizer
     from statistical_battery_visualizer import StatisticalBatteryVisualizer
-    from multiscale_analyzer import MultiScaleAnalyzer
-    from comparative_visualizer import ComparativeBatteryVisualizer
 except ImportError as e:
     print(f"Warning: Could not import visualization modules: {e}")
     print("Please ensure all visualization modules are in the same directory")
@@ -57,13 +55,14 @@ class IntegratedBatteryReporter:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Battery info for file naming
+        self.battery_info = None
+        
         # Create subdirectories for organized output
         self.subdirs = {
             'seaborn': self.output_dir / 'seaborn_analysis',
             'domain': self.output_dir / 'domain_specific',
             'statistical': self.output_dir / 'statistical_analysis',
-            'multiscale': self.output_dir / 'multiscale_analysis',
-            'comparative': self.output_dir / 'comparative_analysis',
             'reports': self.output_dir / 'reports'
         }
         
@@ -84,6 +83,54 @@ class IntegratedBatteryReporter:
         }
         
         logger.info(f"Integrated Battery Reporter initialized, output: {self.output_dir}")
+    
+    def _generate_filename(self, analysis_type: str, extension: str = '') -> str:
+        """
+        배터리 정보를 기반으로 파일명 생성
+        
+        Args:
+            analysis_type: 분석 타입 (report, summary, etc.)
+            extension: 파일 확장자
+            
+        Returns:
+            생성된 파일명
+        """
+        if not self.battery_info:
+            return f"{analysis_type}.{extension}" if extension else analysis_type
+        
+        components = []
+        
+        # Add manufacturer
+        if self.battery_info.get('manufacturer') and self.battery_info['manufacturer'] != 'Unknown':
+            components.append(self.battery_info['manufacturer'])
+        
+        # Add model
+        if self.battery_info.get('model'):
+            components.append(self.battery_info['model'])
+        
+        # Add capacity
+        if self.battery_info.get('capacity_mah'):
+            components.append(f"{self.battery_info['capacity_mah']}mAh")
+        
+        # Add test condition
+        if self.battery_info.get('test_condition') and self.battery_info['test_condition'] != 'Standard':
+            components.append(self.battery_info['test_condition'])
+        
+        # Add analysis type
+        components.append(analysis_type)
+        
+        # Add date and time
+        if self.battery_info.get('date'):
+            components.append(self.battery_info['date'])
+        if self.battery_info.get('time'):
+            components.append(self.battery_info['time'])
+        
+        filename = '_'.join(components)
+        
+        if extension:
+            filename += f".{extension}"
+        
+        return filename
     
     def initialize_visualizers(self) -> bool:
         """
@@ -112,18 +159,6 @@ class IntegratedBatteryReporter:
                 output_dir=str(self.subdirs['statistical'])
             )
             self.analysis_metadata['analysis_modules'].append('Statistical Analysis')
-            
-            # Multiscale Analyzer
-            self.visualizers['multiscale'] = MultiScaleAnalyzer(
-                output_dir=str(self.subdirs['multiscale'])
-            )
-            self.analysis_metadata['analysis_modules'].append('Multiscale Analysis')
-            
-            # Comparative Visualizer
-            self.visualizers['comparative'] = ComparativeBatteryVisualizer(
-                output_dir=str(self.subdirs['comparative'])
-            )
-            self.analysis_metadata['analysis_modules'].append('Comparative Analysis')
             
             logger.info(f"Successfully initialized {len(self.visualizers)} visualization modules")
             return True
@@ -189,9 +224,7 @@ class IntegratedBatteryReporter:
         analysis_tasks = [
             ('seaborn', self._run_seaborn_analysis),
             ('domain', self._run_domain_analysis),
-            ('statistical', self._run_statistical_analysis),
-            ('multiscale', self._run_multiscale_analysis),
-            ('comparative', self._run_comparative_analysis)
+            ('statistical', self._run_statistical_analysis)
         ]
         
         # Execute tasks in parallel
@@ -292,52 +325,6 @@ class IntegratedBatteryReporter:
         except Exception as e:
             return {'status': 'error', 'error': str(e)}
     
-    def _run_multiscale_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
-        """Multiscale 분석 실행"""
-        try:
-            visualizer = self.visualizers['multiscale']
-            
-            # Run multiscale analyses
-            visualizer.create_macro_scale_analysis(data)
-            visualizer.create_meso_scale_analysis(data)
-            visualizer.create_micro_scale_analysis(data)
-            visualizer.create_cross_scale_correlation(data)
-            
-            return {
-                'status': 'completed',
-                'visualizations': [
-                    'macro_scale_lifecycle_analysis.png',
-                    'meso_scale_cycle_groups.png',
-                    'micro_scale_individual_cycles.png',
-                    'cross_scale_correlation_analysis.png'
-                ]
-            }
-        except Exception as e:
-            return {'status': 'error', 'error': str(e)}
-    
-    def _run_comparative_analysis(self, data: pd.DataFrame) -> Dict[str, Any]:
-        """Comparative 분석 실행"""
-        try:
-            visualizer = self.visualizers['comparative']
-            
-            # Create synthetic battery data for comparison
-            batteries_data = visualizer.create_synthetic_battery_data()
-            
-            # Run comparative analyses
-            visualizer.create_performance_radar_chart(batteries_data)
-            visualizer.create_benchmark_comparison(batteries_data)
-            visualizer.create_degradation_comparison(batteries_data)
-            
-            return {
-                'status': 'completed',
-                'visualizations': [
-                    'performance_radar_comparison.png',
-                    'industry_benchmark_comparison.png',
-                    'degradation_pattern_comparison.png'
-                ]
-            }
-        except Exception as e:
-            return {'status': 'error', 'error': str(e)}
     
     def generate_html_report(self, data_overview: Dict, analysis_results: Dict) -> str:
         """
@@ -571,8 +558,12 @@ class IntegratedBatteryReporter:
             error_section=error_section
         )
         
-        # Save HTML report
-        report_path = self.subdirs['reports'] / 'comprehensive_analysis_report.html'
+        # Save HTML report with battery info in filename
+        if self.battery_info:
+            report_filename = self._generate_filename('report', 'html')
+        else:
+            report_filename = 'comprehensive_analysis_report.html'
+        report_path = self.subdirs['reports'] / report_filename
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
@@ -597,7 +588,11 @@ class IntegratedBatteryReporter:
             'output_directories': {k: str(v) for k, v in self.subdirs.items()}
         }
         
-        summary_path = self.subdirs['reports'] / 'analysis_summary.json'
+        if self.battery_info:
+            summary_filename = self._generate_filename('summary', 'json')
+        else:
+            summary_filename = 'analysis_summary.json'
+        summary_path = self.subdirs['reports'] / summary_filename
         with open(summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
         
@@ -647,10 +642,6 @@ class IntegratedBatteryReporter:
                             analysis_results[name] = self._run_domain_analysis(data)
                         elif name == 'statistical':
                             analysis_results[name] = self._run_statistical_analysis(data)
-                        elif name == 'multiscale':
-                            analysis_results[name] = self._run_multiscale_analysis(data)
-                        elif name == 'comparative':
-                            analysis_results[name] = self._run_comparative_analysis(data)
                         
                         logger.info(f"Completed {name} analysis")
                     except Exception as e:

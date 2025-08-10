@@ -59,6 +59,41 @@ class BatteryPatternAnalyzer:
             'Average_voltage_section', 'Accumulated_step', 'Voltage_max[uV]', 'Voltage_min[uV]'
         ]
         
+        # Manufacturer mapping
+        self.manufacturer_mapping = {
+            'SDI': ['SDI', 'Samsung', 'SAMSUNG', 'samsung_sdi', 'SamsungSDI', '삼성', '삼성SDI'],
+            'ATL': ['ATL', 'Amperex', 'CATL', 'amperex', 'AMPEREX'],
+            'LGES': ['LGES', 'LG', 'LGChem', 'LG_Energy', 'LGEnergy', 'LG화학', 'LG에너지솔루션'],
+            'COSMX': ['COSMX', 'Cosmo', 'cosmo', '코스모', 'cosmos', '코스모신소재'],
+            'BYD': ['BYD', 'byd', 'Build_Your_Dreams', 'Blade'],
+            'Panasonic': ['Panasonic', 'PANA', 'Tesla_Panasonic', '파나소닉'],
+            'SK': ['SK', 'SKI', 'SK_Innovation', 'SK이노베이션', 'SKInnovation'],
+            'EVE': ['EVE', 'eve', 'EVE_Energy', 'EVEEnergy'],
+            'Northvolt': ['Northvolt', 'NORTH', 'northvolt'],
+            'SVOLT': ['SVOLT', 'svolt', '스볼트', 'Svolt'],
+        }
+    
+    def extract_manufacturer_from_path(self, path: str) -> str:
+        """
+        경로에서 제조사 정보 추출
+        
+        Args:
+            path: 데이터 경로
+            
+        Returns:
+            제조사명 (표준화된 이름)
+        """
+        path_upper = str(path).upper()
+        
+        for standard_name, variations in self.manufacturer_mapping.items():
+            for variation in variations:
+                if variation.upper() in path_upper:
+                    logger.info(f"Detected manufacturer: {standard_name} from '{variation}'")
+                    return standard_name
+        
+        logger.warning(f"Unknown manufacturer in path: {path}")
+        return "Unknown"
+        
     def extract_capacity_from_path(self, data_path: str) -> Dict[str, Any]:
         """
         경로에서 용량 정보 및 기타 배터리 정보 추출
@@ -99,17 +134,21 @@ class BatteryPatternAnalyzer:
             'path': path_str
         }
         
+        # 제조사 정보 추출 (battery_analyzer_main의 로직과 통합)
+        manufacturer = self.extract_manufacturer_from_path(path_str)
+        battery_info['manufacturer'] = manufacturer
+        
         # 추가 정보 추출 시도
         info_patterns = {
-            'manufacturer': r'(LGES|LG|Samsung|CATL)',
             'grade': r'(G\d+)',
             'version': r'(MP\d+)',
+            'model': r'(NCM\d+|NCA|LFP|LCO)',
             'temperature': r'(상온|고온|저온|RT\d+)',
             'test_type': r'(수명|용량|성능|충방전)'
         }
         
         for key, pattern in info_patterns.items():
-            match = re.search(pattern, path_str)
+            match = re.search(pattern, path_str, re.IGNORECASE)
             if match:
                 battery_info[key] = match.group(1)
         
@@ -1194,7 +1233,7 @@ class BatteryPatternAnalyzer:
         
         print(f"시각화 파일 생성 완료: {output_path}")
     
-    def _run_multi_path_analysis(self, data_paths: List[str], output_dir: str = "analysis_output") -> Dict[str, Any]:
+    def _run_multi_path_analysis(self, data_paths: List[str], output_path: str = "analysis_output") -> Dict[str, Any]:
         """
         다중 경로 분석 실행 (수명시험 중단 케이스 처리)
         
@@ -1241,10 +1280,10 @@ class BatteryPatternAnalyzer:
         
         # 6. 결과 저장
         print("\n결과 저장 중...")
-        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(output_path, exist_ok=True)
         
         # 처리된 데이터 저장
-        processed_csv = os.path.join(output_dir, "processed_data.csv")
+        processed_csv = os.path.join(output_path, "processed_data.csv")
         essential_columns = self._get_essential_columns()
         available_columns = [col for col in essential_columns if col in combined_data.columns]
         
@@ -1253,16 +1292,16 @@ class BatteryPatternAnalyzer:
             print(f"처리된 데이터 저장: {processed_csv} ({len(combined_data)} 행)")
         
         # 분석 리포트 생성
-        report_path = os.path.join(output_dir, "analysis_report.txt")
+        report_path = os.path.join(output_path, "analysis_report.txt")
         self._generate_multi_path_report(report_path, patterns, continuity_info)
         print(f"분석 리포트 저장: {report_path}")
         
         # 시각화 생성
-        viz_dir = os.path.join(output_dir, "visualizations")
+        viz_dir = os.path.join(output_path, "visualizations")
         self._create_visualizations(combined_data, patterns, viz_dir, multi_path=True)
         print(f"시각화 파일 생성 완료: {viz_dir}")
         
-        print(f"\n분석 완료! 결과는 '{output_dir}' 폴더에 저장되었습니다.")
+        print(f"\n분석 완료! 결과는 '{output_path}' 폴더에 저장되었습니다.")
         
         # 결과 반환
         return {
@@ -1282,13 +1321,13 @@ class BatteryPatternAnalyzer:
             }
         }
     
-    def run_analysis(self, data_path, output_dir: str = "analysis_output") -> Dict[str, Any]:
+    def run_analysis(self, data_path, output_path: str = "analysis_output") -> Dict[str, Any]:
         """
         범용 배터리 패턴 분석 실행 (단일/다중 경로 자동 감지)
         
         Args:
             data_path: 데이터 경로 (문자열: 단일 경로, 리스트: 다중 경로)
-            output_dir: 출력 디렉토리
+            output_path: 출력 디렉토리
             
         Returns:
             분석 결과
@@ -1301,15 +1340,15 @@ class BatteryPatternAnalyzer:
                 return {}
             elif len(data_path) == 1:
                 print("[INFO] 리스트에 경로가 1개만 있어 단일 경로로 처리합니다.")
-                return self._run_single_path_analysis(data_path[0], output_dir)
+                return self._run_single_path_analysis(data_path[0], output_path)
             else:
                 print(f"[MULTI] 다중 경로 분석 모드 ({len(data_path)}개 경로)")
-                return self._run_multi_path_analysis(data_path, output_dir)
+                return self._run_multi_path_analysis(data_path, output_path)
         
         elif isinstance(data_path, str):
             # 단일 경로 처리
             print("[SINGLE] 단일 경로 분석 모드")
-            return self._run_single_path_analysis(data_path, output_dir)
+            return self._run_single_path_analysis(data_path, output_path)
         
         else:
             print(f"[ERROR] 지원되지 않는 입력 타입: {type(data_path)}")
@@ -1330,7 +1369,7 @@ class BatteryPatternAnalyzer:
         print("[INFO] run_multi_path_analysis 호출 -> 통합 run_analysis로 리다이렉트")
         return self.run_analysis(data_paths, output_dir)
 
-    def _run_single_path_analysis(self, data_path: str, output_dir: str = "analysis_output") -> Dict[str, Any]:
+    def _run_single_path_analysis(self, data_path: str, output_path: str = "analysis_output") -> Dict[str, Any]:
         """
         단일 경로 분석 실행
         

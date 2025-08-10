@@ -53,6 +53,9 @@ class EnhancedSeabornVisualizer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Battery info for file naming
+        self.battery_info = None
+        
         # Color palettes for different analysis types
         self.cycle_palette = sns.color_palette("viridis", n_colors=20)
         self.health_palette = sns.color_palette("RdYlGn_r", n_colors=10)
@@ -60,6 +63,43 @@ class EnhancedSeabornVisualizer:
         self.condition_palette = sns.color_palette("Set2", n_colors=8)
         
         logger.info(f"Enhanced Seaborn visualizer initialized, output: {self.output_dir}")
+    
+    def _generate_filename(self, plot_type: str) -> str:
+        """
+        배터리 정보를 기반으로 파일명 생성
+        
+        Args:
+            plot_type: 플롯 타입
+            
+        Returns:
+            생성된 파일명
+        """
+        if not self.battery_info:
+            return f"{plot_type}.png"
+        
+        components = []
+        
+        # Add manufacturer
+        if self.battery_info.get('manufacturer') and self.battery_info['manufacturer'] != 'Unknown':
+            components.append(self.battery_info['manufacturer'])
+        
+        # Add model
+        if self.battery_info.get('model'):
+            components.append(self.battery_info['model'])
+        
+        # Add capacity
+        if self.battery_info.get('capacity_mah'):
+            components.append(f"{self.battery_info['capacity_mah']}mAh")
+        
+        # Add plot type
+        components.append(plot_type)
+        
+        # Add date
+        if self.battery_info.get('date'):
+            components.append(self.battery_info['date'])
+        
+        filename = '_'.join(components) + '.png'
+        return filename
     
     def prepare_battery_data(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -165,7 +205,8 @@ class EnhancedSeabornVisualizer:
         plt.tight_layout()
         
         if save:
-            save_path = self.output_dir / 'facetgrid_voltage_capacity_analysis.png'
+            filename = self._generate_filename('facetgrid_voltage_capacity_analysis')
+            save_path = self.output_dir / filename
             plt.savefig(save_path, bbox_inches='tight', facecolor='white')
             logger.info(f"Saved: {save_path}")
         
