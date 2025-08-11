@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
+import matplotlib
+matplotlib.use('Agg')  # GUI 없는 백엔드 사용 (atexit 오류 방지)
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN
 from sklearn.preprocessing import StandardScaler
@@ -609,11 +611,18 @@ class BatteryPatternAnalyzer:
                 
                 if df is not None and not df.empty:
                     # 데이터 검증 및 정리
-                    df = self._clean_toyo_capacity_data(df)
-                    
-                    df['source_file'] = 'CAPACITY.LOG'
-                    df['equipment_type'] = 'Toyo'
-                    channel_data = pd.concat([channel_data, df], ignore_index=True)
+                    try:
+                        df = self._clean_toyo_capacity_data(df)
+                        
+                        # 인덱스 초기화 (concat 오류 방지)
+                        df = df.reset_index(drop=True)
+                        
+                        df['source_file'] = 'CAPACITY.LOG'
+                        df['equipment_type'] = 'Toyo'
+                        channel_data = pd.concat([channel_data, df], ignore_index=True)
+                    except Exception as e:
+                        logger.error(f"Toyo CAPACITY.LOG 정리 중 오류: {e}")
+                        continue  # Skip this file and continue with next one
                     
                     logger.debug(f"Toyo CAPACITY.LOG 로드: {len(df):,} 행")
                     
@@ -631,11 +640,18 @@ class BatteryPatternAnalyzer:
                 
                 if df is not None and not df.empty:
                     # 데이터 검증 및 정리
-                    df = self._clean_toyo_measurement_data(df)
-                    
-                    df['source_file'] = Path(measurement_file).name
-                    df['equipment_type'] = 'Toyo'
-                    channel_data = pd.concat([channel_data, df], ignore_index=True)
+                    try:
+                        df = self._clean_toyo_measurement_data(df)
+                        
+                        # 인덱스 초기화 (concat 오류 방지)
+                        df = df.reset_index(drop=True)
+                        
+                        df['source_file'] = Path(measurement_file).name
+                        df['equipment_type'] = 'Toyo'
+                        channel_data = pd.concat([channel_data, df], ignore_index=True)
+                    except Exception as e:
+                        logger.error(f"Toyo 측정 데이터 정리 중 오류: {e}")
+                        continue  # Skip this file and continue with next one
                     
                     measurement_count += 1
                     logger.debug(f"Toyo 측정파일 로드: {Path(measurement_file).name} - {len(df):,} 행")
@@ -674,8 +690,12 @@ class BatteryPatternAnalyzer:
                 for i in range(len(df.columns), len(expected_columns)):
                     df[f'col{i}'] = np.nan
             
-            # 컬럼명 설정
-            df.columns = expected_columns[:len(df.columns)]
+            # 컬럼명 설정 (안전한 변환)
+            try:
+                df.columns = expected_columns[:len(df.columns)]
+            except Exception as e:
+                logger.warning(f"Toyo CAPACITY 파일 컬럼명 설정 실패, 기본 컬럼명 사용: {e}")
+                df.columns = [f'col{i}' for i in range(len(df.columns))]
             
             # 데이터 타입 변환
             numeric_columns = ['Cycle', 'TotlCycle', 'Cap[mAh]', 'Pow[mWh]', 
@@ -711,9 +731,16 @@ class BatteryPatternAnalyzer:
             if len(df) > 0:
                 first_row = df.iloc[0]
                 if any('Date' in str(val) or 'Time' in str(val) for val in first_row if pd.notna(val)):
-                    # 첫 번째 행을 헤더로 사용
-                    df.columns = df.iloc[0]
-                    df = df[1:].reset_index(drop=True)
+                    # 첫 번째 행을 헤더로 사용 (안전한 변환)
+                    try:
+                        new_columns = [str(val) if pd.notna(val) else f'col{i}' for i, val in enumerate(first_row)]
+                        df.columns = new_columns
+                        df = df[1:].reset_index(drop=True)
+                        logger.debug(f"Toyo 측정파일 헤더 설정: {new_columns[:5]}...")
+                    except Exception as e:
+                        logger.warning(f"Toyo 측정파일 헤더 설정 실패, 기본 헤더 사용: {e}")
+                        # 기본 컬럼명 사용
+                        df.columns = [f'col{i}' for i in range(len(df.columns))]
             
             # 예상 컬럼들
             expected_columns = [
@@ -730,8 +757,12 @@ class BatteryPatternAnalyzer:
                 for i in range(len(df.columns), len(expected_columns)):
                     df[f'col{i}'] = np.nan
             
-            # 컬럼명 설정
-            df.columns = expected_columns[:len(df.columns)]
+            # 컬럼명 설정 (안전한 변환)
+            try:
+                df.columns = expected_columns[:len(df.columns)]
+            except Exception as e:
+                logger.warning(f"Toyo 측정파일 컬럼명 설정 실패, 기본 컬럼명 사용: {e}")
+                df.columns = [f'col{i}' for i in range(len(df.columns))]
             
             # 데이터 타입 변환
             numeric_columns = ['PassTime[Sec]', 'Voltage[V]', 'Current[mA]', 
@@ -918,7 +949,7 @@ class BatteryPatternAnalyzer:
     
     def _try_read_csv_multiple_separators(self, file_path: Path, columns: List[str] = None) -> Optional[pd.DataFrame]:
         """
-        다양한 구분자로 CSV 파일 읽기 시도
+        다양한 구분자로 CSV 파일 읽기 시도 (Toyo 숫자 파일 형식 지원)
         
         Args:
             file_path: 파일 경로
@@ -927,9 +958,31 @@ class BatteryPatternAnalyzer:
         Returns:
             데이터프레임 또는 None
         """
-        separators = ['\t', ',', ';', ' ']  # 시도할 구분자들
+        separators = [',', '\t', ';', ' ']  # 시도할 구분자들
         encodings = ['utf-8', 'cp949', 'euc-kr', 'latin1']  # 시도할 인코딩들
         
+        # Toyo 숫자 파일 형식 우선 처리 (파일명이 숫자인 경우)
+        if file_path.name.isdigit():
+            for encoding in encodings:
+                try:
+                    # Toyo 숫자 파일은 3행을 건너뛰고 시작
+                    df = pd.read_csv(file_path, sep=',', encoding=encoding, skiprows=3, low_memory=False)
+                    if not df.empty and len(df.columns) >= 10:
+                        logger.debug(f"Toyo 숫자파일 로드 성공: {file_path.name} (인코딩: {encoding})")
+                        return df
+                except Exception:
+                    continue
+                
+                try:
+                    # 2행 건너뛰기도 시도
+                    df = pd.read_csv(file_path, sep=',', encoding=encoding, skiprows=2, low_memory=False)
+                    if not df.empty and len(df.columns) >= 10:
+                        logger.debug(f"Toyo 숫자파일 로드 성공: {file_path.name} (인코딩: {encoding}, skiprows=2)")
+                        return df
+                except Exception:
+                    continue
+        
+        # 일반적인 CSV 로드 시도
         for encoding in encodings:
             for sep in separators:
                 try:
@@ -941,11 +994,29 @@ class BatteryPatternAnalyzer:
                     
                     # 데이터가 제대로 로드되었는지 확인
                     if not df.empty and len(df.columns) >= 3:
-                        logger.debug(f"성공적으로 로드됨: {file_path.name} (구분자: '{sep}', 인코딩: {encoding})")
+                        logger.debug(f"일반 CSV 로드 성공: {file_path.name} (구분자: '{sep}', 인코딩: {encoding})")
                         return df
                         
                 except Exception:
                     continue
+                
+                # skiprows로 메타데이터 행 건너뛰기 시도
+                for skip_rows in [1, 2, 3, 4]:
+                    try:
+                        if columns:
+                            df = pd.read_csv(file_path, sep=sep, header=None, 
+                                           names=columns, low_memory=False, encoding=encoding, 
+                                           skiprows=skip_rows)
+                        else:
+                            df = pd.read_csv(file_path, sep=sep, low_memory=False, encoding=encoding, 
+                                           skiprows=skip_rows)
+                        
+                        if not df.empty and len(df.columns) >= 3:
+                            logger.debug(f"skiprows CSV 로드 성공: {file_path.name} (구분자: '{sep}', 인코딩: {encoding}, skiprows: {skip_rows})")
+                            return df
+                            
+                    except Exception:
+                        continue
         
         logger.warning(f"모든 구분자/인코딩 조합으로 로드 실패: {file_path.name}")
         return None
@@ -2509,6 +2580,23 @@ def main():
         print(f"분석 중 오류 발생: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        # matplotlib 정리 (atexit callback 오류 방지)
+        try:
+            plt.close('all')  # 모든 figure 닫기
+            import matplotlib
+            matplotlib.pyplot.close('all')
+        except Exception as e:
+            pass  # matplotlib 정리 중 오류는 무시
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # 프로그램 종료 시 matplotlib 완전 정리
+        try:
+            plt.close('all')
+            import matplotlib
+            matplotlib.pyplot.close('all')
+        except:
+            pass
