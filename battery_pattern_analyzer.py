@@ -274,7 +274,7 @@ class BatteryPatternAnalyzer:
     
     def _detect_toyo_channels(self, path_obj: Path) -> Dict[str, Dict]:
         """
-        Toyo 시스템 채널 감지
+        Toyo 시스템 채널 감지 (개선된 단일/다중 채널 구분 로직)
         
         Args:
             path_obj: 경로 객체
@@ -284,9 +284,46 @@ class BatteryPatternAnalyzer:
         """
         channels = {}
         
-        # 숫자 디렉토리들을 채널로 인식
+        # 먼저 루트 레벨에 직접 데이터 파일이 있는지 확인 (단일 채널 우선 검사)
+        root_measurement_files = []
+        root_capacity_files = []
+        numbered_dirs = []
+        
+        # 루트 레벨 파일들 확인
         for item in path_obj.iterdir():
-            if item.is_dir() and (item.name.isdigit() or re.match(r'^\d+$', item.name)):
+            if item.is_file():
+                if item.name.isdigit():
+                    root_measurement_files.append(str(item))
+                elif item.name == 'CAPACITY.LOG':
+                    root_capacity_files.append(str(item))
+            elif item.is_dir() and (item.name.isdigit() or re.match(r'^\d+$', item.name)):
+                numbered_dirs.append(item)
+        
+        # 루트 레벨에 데이터 파일이 있으면 단일 채널로 처리
+        if root_measurement_files or root_capacity_files:
+            logger.debug(f"Toyo 단일 채널 감지: 루트 레벨에 {len(root_measurement_files)}개 측정파일, {len(root_capacity_files)}개 용량파일")
+            
+            # 하위 디렉토리의 파일들도 포함
+            for file_path in path_obj.rglob('*'):
+                if file_path.is_file() and file_path.parent != path_obj:
+                    if file_path.name.isdigit():
+                        root_measurement_files.append(str(file_path))
+                    elif file_path.name == 'CAPACITY.LOG':
+                        root_capacity_files.append(str(file_path))
+            
+            channels['Ch_Root'] = {
+                'path': str(path_obj),
+                'measurement_files': root_measurement_files,
+                'capacity_files': root_capacity_files,
+                'file_count': len(root_measurement_files) + len(root_capacity_files),
+                'equipment_type': 'Toyo'
+            }
+            
+        # 루트 레벨에 데이터 파일이 없고, 숫자 디렉토리들만 있는 경우 다중 채널로 처리
+        elif numbered_dirs:
+            logger.debug(f"Toyo 다중 채널 구조 감지: {len(numbered_dirs)}개 숫자 디렉토리")
+            
+            for item in numbered_dirs:
                 channel_id = f"Ch{item.name}"
                 
                 # 채널 내 파일들 수집
@@ -312,28 +349,29 @@ class BatteryPatternAnalyzer:
                     
                     logger.debug(f"Toyo 채널 감지: {channel_id} - {len(measurement_files)}개 측정파일, {len(capacity_files)}개 용량파일")
         
-        # 루트 레벨에 파일들이 있는 경우 (단일 채널)
+        # 아무것도 찾지 못한 경우 전체 하위 구조 검색
         if not channels:
-            root_measurement_files = []
-            root_capacity_files = []
+            logger.debug("Toyo 표준 구조 미발견, 전체 하위 구조 검색 중...")
+            all_measurement_files = []
+            all_capacity_files = []
             
             for file_path in path_obj.rglob('*'):
                 if file_path.is_file():
                     if file_path.name.isdigit():
-                        root_measurement_files.append(str(file_path))
+                        all_measurement_files.append(str(file_path))
                     elif file_path.name == 'CAPACITY.LOG':
-                        root_capacity_files.append(str(file_path))
+                        all_capacity_files.append(str(file_path))
             
-            if root_measurement_files or root_capacity_files:
-                channels['Ch_Root'] = {
+            if all_measurement_files or all_capacity_files:
+                channels['Ch_Unknown'] = {
                     'path': str(path_obj),
-                    'measurement_files': root_measurement_files,
-                    'capacity_files': root_capacity_files,
-                    'file_count': len(root_measurement_files) + len(root_capacity_files),
+                    'measurement_files': all_measurement_files,
+                    'capacity_files': all_capacity_files,
+                    'file_count': len(all_measurement_files) + len(all_capacity_files),
                     'equipment_type': 'Toyo'
                 }
                 
-                logger.debug(f"Toyo 루트 채널 감지: {len(root_measurement_files)}개 측정파일, {len(root_capacity_files)}개 용량파일")
+                logger.debug(f"Toyo 비표준 구조 채널 감지: {len(all_measurement_files)}개 측정파일, {len(all_capacity_files)}개 용량파일")
         
         return channels
     
@@ -2417,6 +2455,35 @@ def main():
     if not data_path:
         print("경로가 입력되지 않았습니다. 예시 경로로 실행합니다.")
         data_path = "data/PNE_generated"
+    else:
+        # 백슬래시 경로 처리 (Windows 경로 정규화)
+        # 사용자가 D:\MP1 같은 형태로 입력한 경우 처리
+        try:
+            # pathlib.Path로 경로를 정규화하고 존재 여부 확인
+            normalized_path = Path(data_path)
+            if not normalized_path.exists():
+                # 경로가 존재하지 않으면 대안 경로들 시도
+                alternative_paths = [
+                    data_path.replace('\\', '/'),  # 슬래시로 변환
+                    data_path.replace('/', '\\'),  # 백슬래시로 변환
+                    str(Path(data_path).resolve())  # 절대경로로 변환
+                ]
+                
+                path_found = False
+                for alt_path in alternative_paths:
+                    if Path(alt_path).exists():
+                        data_path = alt_path
+                        path_found = True
+                        print(f"경로를 '{alt_path}'로 정규화했습니다.")
+                        break
+                
+                if not path_found:
+                    print(f"⚠️  경로 '{data_path}'가 존재하지 않지만 분석을 시도합니다.")
+            else:
+                data_path = str(normalized_path)
+        except Exception as e:
+            print(f"⚠️  경로 정규화 중 오류: {e}")
+            print(f"원본 경로 '{data_path}'로 계속 진행합니다.")
     
     # 분석 실행
     analyzer = BatteryPatternAnalyzer()
