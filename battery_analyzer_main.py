@@ -27,7 +27,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(f'battery_analysis_{datetime.now().strftime("%Y%m%d")}.log')
+        logging.FileHandler(f'battery_analysis_{datetime.now().strftime("%Y%m%d")}.log', encoding='utf-8')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -86,17 +86,24 @@ class BatteryAnalyzerMain:
         Returns:
             제조사명 (표준화된 이름)
         """
-        path_upper = str(path).upper()
-        
-        # Check each manufacturer and their variations
-        for standard_name, variations in MANUFACTURER_MAPPING.items():
-            for variation in variations:
-                if variation.upper() in path_upper:
-                    logger.info(f"Detected manufacturer: {standard_name} from '{variation}'")
-                    return standard_name
-        
-        logger.warning(f"Unknown manufacturer in path: {path}")
-        return "Unknown"
+        try:
+            # Handle Unicode characters safely
+            path_str = str(path).encode('utf-8', errors='ignore').decode('utf-8')
+            path_upper = path_str.upper()
+            
+            # Check each manufacturer and their variations
+            for standard_name, variations in MANUFACTURER_MAPPING.items():
+                for variation in variations:
+                    if variation.upper() in path_upper:
+                        logger.info(f"Detected manufacturer: {standard_name} from '{variation}'")
+                        return standard_name
+            
+            logger.warning(f"Unknown manufacturer in path: {path_str}")
+            return "Unknown"
+            
+        except (UnicodeEncodeError, UnicodeDecodeError) as e:
+            logger.error(f"Unicode error processing path: {path} - {str(e)}")
+            return "Unknown"
     
     def extract_capacity(self, path: str) -> Optional[int]:
         """
@@ -108,24 +115,32 @@ class BatteryAnalyzerMain:
         Returns:
             용량 (mAh) 또는 None
         """
-        # Try different capacity patterns
-        patterns = [
-            r'(\d+)mAh',
-            r'(\d+)Ah',
-            r'(\d+\.\d+)Ah',
-            r'(\d+)_mAh',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, str(path), re.IGNORECASE)
-            if match:
-                capacity = float(match.group(1))
-                # Convert Ah to mAh if necessary
-                if 'Ah' in match.group(0) and 'mAh' not in match.group(0):
-                    capacity = capacity * 1000
-                return int(capacity)
-        
-        return None
+        try:
+            # Handle Unicode characters safely
+            path_str = str(path).encode('utf-8', errors='ignore').decode('utf-8')
+            
+            # Try different capacity patterns
+            patterns = [
+                r'(\d+)mAh',
+                r'(\d+)Ah',
+                r'(\d+\.\d+)Ah',
+                r'(\d+)_mAh',
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, path_str, re.IGNORECASE)
+                if match:
+                    capacity = float(match.group(1))
+                    # Convert Ah to mAh if necessary
+                    if 'Ah' in match.group(0) and 'mAh' not in match.group(0):
+                        capacity = capacity * 1000
+                    return int(capacity)
+            
+            return None
+            
+        except (UnicodeEncodeError, UnicodeDecodeError) as e:
+            logger.error(f"Unicode error extracting capacity from path: {path} - {str(e)}")
+            return None
     
     def extract_model(self, path: str) -> Optional[str]:
         """
@@ -137,27 +152,35 @@ class BatteryAnalyzerMain:
         Returns:
             모델명 또는 None
         """
-        # Model patterns
-        patterns = [
-            r'G\d+',           # G3, G4, etc.
-            r'MP\d+',          # MP1, MP2, etc.
-            r'NCM\d+',         # NCM811, NCM622, etc.
-            r'NCA',            # NCA
-            r'LFP',            # LFP
-            r'LCO',            # LCO
-            r'Series[\s_]?\d+', # Series1, Series_2
-            r'Gen[\s_]?\d+',   # Gen1, Gen_2
-            r'Model[\s_]?\w+', # Model_A, Model B
-            r'Blade',          # BYD Blade
-            r'\d{4,5}',        # 18650, 21700, 4680
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, str(path), re.IGNORECASE)
-            if match:
-                return match.group(0).upper()
-        
-        return None
+        try:
+            # Handle Unicode characters safely
+            path_str = str(path).encode('utf-8', errors='ignore').decode('utf-8')
+            
+            # Model patterns
+            patterns = [
+                r'G\d+',           # G3, G4, etc.
+                r'MP\d+',          # MP1, MP2, etc.
+                r'NCM\d+',         # NCM811, NCM622, etc.
+                r'NCA',            # NCA
+                r'LFP',            # LFP
+                r'LCO',            # LCO
+                r'Series[\s_]?\d+', # Series1, Series_2
+                r'Gen[\s_]?\d+',   # Gen1, Gen_2
+                r'Model[\s_]?\w+', # Model_A, Model B
+                r'Blade',          # BYD Blade
+                r'\d{4,5}',        # 18650, 21700, 4680
+            ]
+            
+            for pattern in patterns:
+                match = re.search(pattern, path_str, re.IGNORECASE)
+                if match:
+                    return match.group(0).upper()
+            
+            return None
+            
+        except (UnicodeEncodeError, UnicodeDecodeError) as e:
+            logger.error(f"Unicode error extracting model from path: {path} - {str(e)}")
+            return None
     
     def extract_test_condition(self, path: str) -> str:
         """
@@ -169,26 +192,33 @@ class BatteryAnalyzerMain:
         Returns:
             테스트 조건
         """
-        conditions = []
-        path_lower = str(path).lower()
-        
-        # Temperature conditions
-        if any(kw in path_lower for kw in ['상온', 'rt', 'room_temp', '25c', '25도', '25℃']):
-            conditions.append('RT')
-        elif any(kw in path_lower for kw in ['고온', 'ht', 'high_temp', '45c', '45도', '60c', '60도']):
-            conditions.append('HT')
-        elif any(kw in path_lower for kw in ['저온', 'lt', 'low_temp', '-20c', '영하', '-10c']):
-            conditions.append('LT')
-        
-        # Test type
-        if any(kw in path_lower for kw in ['수명', 'life', 'cycle', 'aging', '사이클']):
-            conditions.append('Life')
-        if any(kw in path_lower for kw in ['급속', 'fast', 'quick', '급속충전', 'fastcharge']):
-            conditions.append('Fast')
-        if any(kw in path_lower for kw in ['안전', 'safety', 'abuse', '과충전']):
-            conditions.append('Safety')
-        
-        return '_'.join(conditions) if conditions else 'Standard'
+        try:
+            # Handle Unicode characters safely
+            path_str = str(path).encode('utf-8', errors='ignore').decode('utf-8')
+            conditions = []
+            path_lower = path_str.lower()
+            
+            # Temperature conditions
+            if any(kw in path_lower for kw in ['상온', 'rt', 'room_temp', '25c', '25도', '25℃']):
+                conditions.append('RT')
+            elif any(kw in path_lower for kw in ['고온', 'ht', 'high_temp', '45c', '45도', '60c', '60도']):
+                conditions.append('HT')
+            elif any(kw in path_lower for kw in ['저온', 'lt', 'low_temp', '-20c', '영하', '-10c']):
+                conditions.append('LT')
+            
+            # Test type
+            if any(kw in path_lower for kw in ['수명', 'life', 'cycle', 'aging', '사이클']):
+                conditions.append('Life')
+            if any(kw in path_lower for kw in ['급속', 'fast', 'quick', '급속충전', 'fastcharge']):
+                conditions.append('Fast')
+            if any(kw in path_lower for kw in ['안전', 'safety', 'abuse', '과충전']):
+                conditions.append('Safety')
+            
+            return '_'.join(conditions) if conditions else 'Standard'
+            
+        except (UnicodeEncodeError, UnicodeDecodeError) as e:
+            logger.error(f"Unicode error extracting test condition from path: {path} - {str(e)}")
+            return 'Standard'
     
     def extract_battery_info(self, path: str) -> Dict[str, Any]:
         """
@@ -226,37 +256,54 @@ class BatteryAnalyzerMain:
         Returns:
             출력 파일명
         """
-        components = []
-        
-        # Add manufacturer
-        if battery_info.get('manufacturer') and battery_info['manufacturer'] != 'Unknown':
-            components.append(battery_info['manufacturer'])
-        
-        # Add model
-        if battery_info.get('model'):
-            components.append(battery_info['model'])
-        
-        # Add capacity
-        if battery_info.get('capacity_mah'):
-            components.append(f"{battery_info['capacity_mah']}mAh")
-        
-        # Add test condition
-        if battery_info.get('test_condition') and battery_info['test_condition'] != 'Standard':
-            components.append(battery_info['test_condition'])
-        
-        # Add analysis type
-        components.append(analysis_type)
-        
-        # Add date and time
-        components.append(battery_info['date'])
-        components.append(battery_info['time'])
-        
-        filename = '_'.join(components)
-        
-        if extension:
-            filename += f".{extension}"
-        
-        return filename
+        try:
+            components = []
+            
+            # Add manufacturer
+            if battery_info.get('manufacturer') and battery_info['manufacturer'] != 'Unknown':
+                # Clean manufacturer name for filename
+                mfr_clean = str(battery_info['manufacturer']).replace('•', '_').replace('!', '')
+                components.append(mfr_clean)
+            
+            # Add model
+            if battery_info.get('model'):
+                model_clean = str(battery_info['model']).replace('•', '_').replace('!', '')
+                components.append(model_clean)
+            
+            # Add capacity
+            if battery_info.get('capacity_mah'):
+                components.append(f"{battery_info['capacity_mah']}mAh")
+            
+            # Add test condition
+            if battery_info.get('test_condition') and battery_info['test_condition'] != 'Standard':
+                condition_clean = str(battery_info['test_condition']).replace('•', '_').replace('!', '')
+                components.append(condition_clean)
+            
+            # Add analysis type
+            type_clean = str(analysis_type).replace('•', '_').replace('!', '')
+            components.append(type_clean)
+            
+            # Add date and time
+            components.append(battery_info['date'])
+            components.append(battery_info['time'])
+            
+            # Join and clean filename
+            filename = '_'.join(components)
+            # Remove any remaining problematic characters for Windows filenames
+            filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+            
+            if extension:
+                filename += f".{extension}"
+            
+            return filename
+            
+        except Exception as e:
+            logger.error(f"Error generating filename: {str(e)}")
+            # Fallback filename
+            fallback = f"analysis_{analysis_type}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if extension:
+                fallback += f".{extension}"
+            return fallback
     
     def create_output_directory(self, battery_info: Dict) -> Path:
         """
@@ -293,6 +340,13 @@ class BatteryAnalyzerMain:
             분석 결과
         """
         logger.info(f"Analyzing single path: {path}")
+        
+        # Check if path exists
+        if not os.path.exists(path):
+            error_msg = f"WARNING - 경로가 존재하지 않습니다: {path}"
+            logger.warning(error_msg)
+            print(error_msg)
+            return {'error': error_msg, 'path': path}
         
         # Extract battery info
         battery_info = self.extract_battery_info(path)
@@ -368,6 +422,14 @@ class BatteryAnalyzerMain:
         # Analyze each path
         for path in paths:
             try:
+                # Check path existence first
+                if not os.path.exists(path):
+                    error_msg = f"WARNING - 경로가 존재하지 않습니다: {path}"
+                    logger.warning(error_msg)
+                    print(error_msg)
+                    results[path] = {'error': error_msg, 'path': path}
+                    continue
+                
                 result = self.analyze_single_path(path)
                 battery_info = result.get('battery_info', {})
                 manufacturer = battery_info.get('manufacturer', 'Unknown')
