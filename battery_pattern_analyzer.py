@@ -42,6 +42,8 @@ class BatteryPatternAnalyzer:
         self.equipment_type = None
         self.data_path = None
         self.analysis_results = {}
+        self.channels = {}  # 채널 정보 저장
+        self.is_multi_channel = False  # 다중 채널 여부
         
         # PNE 46컬럼 정의
         self.pne_columns = [
@@ -193,6 +195,148 @@ class BatteryPatternAnalyzer:
             else:
                 return 'Unknown'
     
+    def detect_channels(self, data_path: str) -> Dict[str, Dict]:
+        """
+        채널 구조 감지 및 정보 추출
+        
+        Args:
+            data_path: 데이터 경로
+            
+        Returns:
+            채널 정보 딕셔너리
+        """
+        path_obj = Path(data_path)
+        channels = {}
+        
+        # 장비 타입 감지
+        equipment_type = self.detect_equipment_type(data_path)
+        
+        if equipment_type == 'PNE':
+            channels = self._detect_pne_channels(path_obj)
+        elif equipment_type == 'Toyo':
+            channels = self._detect_toyo_channels(path_obj)
+        else:
+            logger.warning(f"Unknown equipment type for path: {data_path}")
+            return {}
+        
+        # 다중 채널 여부 판단
+        self.is_multi_channel = len(channels) > 1
+        
+        logger.info(f"감지된 채널: {len(channels)}개, 장비타입: {equipment_type}")
+        for ch_id, ch_info in channels.items():
+            logger.info(f"  채널 {ch_id}: {ch_info['path']} ({ch_info['file_count']}개 파일)")
+        
+        self.channels = channels
+        return channels
+    
+    def _detect_pne_channels(self, path_obj: Path) -> Dict[str, Dict]:
+        """
+        PNE 시스템 채널 감지
+        
+        Args:
+            path_obj: 경로 객체
+            
+        Returns:
+            PNE 채널 정보
+        """
+        channels = {}
+        
+        # M01Ch###[###] 패턴 찾기
+        channel_dirs = []
+        for item in path_obj.rglob('M01Ch*'):
+            if item.is_dir():
+                channel_dirs.append(item)
+        
+        for ch_dir in sorted(channel_dirs):
+            # 채널 번호 추출
+            match = re.search(r'M01Ch(\d+)', ch_dir.name)
+            if match:
+                channel_id = f"Ch{match.group(1)}"
+                
+                # Restore 폴더 확인
+                restore_dir = ch_dir / 'Restore'
+                if restore_dir.exists():
+                    data_files = list(restore_dir.glob('ch*_SaveData*.csv'))
+                    index_files = list(restore_dir.glob('savingFileIndex*.csv'))
+                    
+                    channels[channel_id] = {
+                        'path': str(ch_dir),
+                        'restore_path': str(restore_dir),
+                        'data_files': [str(f) for f in data_files],
+                        'index_files': [str(f) for f in index_files],
+                        'file_count': len(data_files) + len(index_files),
+                        'equipment_type': 'PNE'
+                    }
+                    
+                    logger.debug(f"PNE 채널 감지: {channel_id} - {len(data_files)}개 데이터 파일")
+        
+        return channels
+    
+    def _detect_toyo_channels(self, path_obj: Path) -> Dict[str, Dict]:
+        """
+        Toyo 시스템 채널 감지
+        
+        Args:
+            path_obj: 경로 객체
+            
+        Returns:
+            Toyo 채널 정보
+        """
+        channels = {}
+        
+        # 숫자 디렉토리들을 채널로 인식
+        for item in path_obj.iterdir():
+            if item.is_dir() and (item.name.isdigit() or re.match(r'^\d+$', item.name)):
+                channel_id = f"Ch{item.name}"
+                
+                # 채널 내 파일들 수집
+                measurement_files = []
+                capacity_files = []
+                
+                # 숫자 파일들 (측정 데이터)
+                for file_path in item.rglob('*'):
+                    if file_path.is_file():
+                        if file_path.name.isdigit():
+                            measurement_files.append(str(file_path))
+                        elif file_path.name == 'CAPACITY.LOG':
+                            capacity_files.append(str(file_path))
+                
+                if measurement_files or capacity_files:
+                    channels[channel_id] = {
+                        'path': str(item),
+                        'measurement_files': measurement_files,
+                        'capacity_files': capacity_files,
+                        'file_count': len(measurement_files) + len(capacity_files),
+                        'equipment_type': 'Toyo'
+                    }
+                    
+                    logger.debug(f"Toyo 채널 감지: {channel_id} - {len(measurement_files)}개 측정파일, {len(capacity_files)}개 용량파일")
+        
+        # 루트 레벨에 파일들이 있는 경우 (단일 채널)
+        if not channels:
+            root_measurement_files = []
+            root_capacity_files = []
+            
+            for file_path in path_obj.rglob('*'):
+                if file_path.is_file():
+                    if file_path.name.isdigit():
+                        root_measurement_files.append(str(file_path))
+                    elif file_path.name == 'CAPACITY.LOG':
+                        root_capacity_files.append(str(file_path))
+            
+            if root_measurement_files or root_capacity_files:
+                channels['Ch_Root'] = {
+                    'path': str(path_obj),
+                    'measurement_files': root_measurement_files,
+                    'capacity_files': root_capacity_files,
+                    'file_count': len(root_measurement_files) + len(root_capacity_files),
+                    'equipment_type': 'Toyo'
+                }
+                
+                logger.debug(f"Toyo 루트 채널 감지: {len(root_measurement_files)}개 측정파일, {len(root_capacity_files)}개 용량파일")
+        
+        return channels
+    
     def _determine_equipment_type_enhanced(self, data_path: str) -> str:
         """
         개선된 장비 타입 감지
@@ -311,26 +455,267 @@ class BatteryPatternAnalyzer:
     
     def load_and_concatenate_data(self, data_path: str) -> pd.DataFrame:
         """
-        데이터 로드 및 파일 연결 (향상된 오류 처리 및 fallback 메커니즘 포함)
+        다중 채널 데이터 로드 및 파일 연결
         
         Args:
             data_path: 데이터 경로
             
         Returns:
-            통합된 데이터프레임
+            통합된 데이터프레임 (채널별 구분 포함)
         """
-        path_obj = Path(data_path)
-        combined_data = pd.DataFrame()
+        logger.info(f"다중 채널 데이터 로드 시작: {data_path}")
         
-        logger.info(f"데이터 로드 시작: {data_path}")
-        logger.info(f"감지된 장비 타입: {self.equipment_type}")
+        # 채널 감지
+        channels = self.detect_channels(data_path)
         
-        if not path_obj.exists():
-            logger.error(f"경로가 존재하지 않습니다: {data_path}")
-            return combined_data
+        if not channels:
+            logger.error("채널을 찾을 수 없습니다.")
+            return pd.DataFrame()
         
-        # 파일 개수 확인
-        all_files = list(path_obj.rglob('*'))
+        # 각 채널별로 데이터 로드
+        all_channel_data = pd.DataFrame()
+        
+        for channel_id, channel_info in channels.items():
+            logger.info(f"채널 {channel_id} 데이터 로드 중...")
+            
+            channel_data = self._load_single_channel_data(channel_id, channel_info)
+            
+            if not channel_data.empty:
+                # 채널 정보 추가
+                channel_data['channel_id'] = channel_id
+                channel_data['channel_path'] = channel_info['path']
+                
+                # 전체 데이터에 추가
+                all_channel_data = pd.concat([all_channel_data, channel_data], ignore_index=True)
+                
+                logger.info(f"채널 {channel_id}: {len(channel_data):,} 행 로드됨")
+            else:
+                logger.warning(f"채널 {channel_id}: 데이터 로드 실패")
+        
+        logger.info(f"전체 데이터 로드 완료: {len(channels)}개 채널, {len(all_channel_data):,} 행")
+        return all_channel_data
+    
+    def _load_single_channel_data(self, channel_id: str, channel_info: Dict) -> pd.DataFrame:
+        """
+        단일 채널 데이터 로드
+        
+        Args:
+            channel_id: 채널 ID
+            channel_info: 채널 정보
+            
+        Returns:
+            채널 데이터프레임
+        """
+        equipment_type = channel_info['equipment_type']
+        channel_data = pd.DataFrame()
+        
+        try:
+            if equipment_type == 'PNE':
+                channel_data = self._load_pne_channel_data(channel_info)
+            elif equipment_type == 'Toyo':
+                channel_data = self._load_toyo_channel_data(channel_info)
+            else:
+                logger.error(f"알 수 없는 장비 타입: {equipment_type}")
+                
+        except Exception as e:
+            logger.error(f"채널 {channel_id} 데이터 로드 중 오류: {e}")
+            
+        return channel_data
+    
+    def _load_pne_channel_data(self, channel_info: Dict) -> pd.DataFrame:
+        """
+        PNE 채널 데이터 로드
+        
+        Args:
+            channel_info: PNE 채널 정보
+            
+        Returns:
+            PNE 채널 데이터
+        """
+        channel_data = pd.DataFrame()
+        
+        # 데이터 파일들 로드
+        for data_file in channel_info['data_files']:
+            try:
+                df = pd.read_csv(data_file, delimiter='\t', header=None, 
+                               names=self.pne_columns, encoding='utf-8')
+                
+                if not df.empty:
+                    df['source_file'] = Path(data_file).name
+                    df['equipment_type'] = 'PNE'
+                    channel_data = pd.concat([channel_data, df], ignore_index=True)
+                    
+                    logger.debug(f"PNE 파일 로드: {Path(data_file).name} - {len(df):,} 행")
+                    
+            except Exception as e:
+                logger.error(f"PNE 파일 로드 실패 {data_file}: {e}")
+                
+        return channel_data
+    
+    def _load_toyo_channel_data(self, channel_info: Dict) -> pd.DataFrame:
+        """
+        Toyo 채널 데이터 로드
+        
+        Args:
+            channel_info: Toyo 채널 정보
+            
+        Returns:
+            Toyo 채널 데이터
+        """
+        channel_data = pd.DataFrame()
+        
+        # CAPACITY.LOG 파일들 로드
+        for capacity_file in channel_info['capacity_files']:
+            try:
+                df = self._try_read_csv_multiple_separators(Path(capacity_file))
+                
+                if df is not None and not df.empty:
+                    # 데이터 검증 및 정리
+                    df = self._clean_toyo_capacity_data(df)
+                    
+                    df['source_file'] = 'CAPACITY.LOG'
+                    df['equipment_type'] = 'Toyo'
+                    channel_data = pd.concat([channel_data, df], ignore_index=True)
+                    
+                    logger.debug(f"Toyo CAPACITY.LOG 로드: {len(df):,} 행")
+                    
+            except Exception as e:
+                logger.error(f"Toyo CAPACITY.LOG 로드 실패 {capacity_file}: {e}")
+        
+        # 측정 파일들 로드 (필요한 경우)
+        measurement_count = 0
+        for measurement_file in channel_info['measurement_files']:
+            if measurement_count >= 10:  # 최대 10개만 로드
+                break
+                
+            try:
+                df = self._try_read_csv_multiple_separators(Path(measurement_file))
+                
+                if df is not None and not df.empty:
+                    # 데이터 검증 및 정리
+                    df = self._clean_toyo_measurement_data(df)
+                    
+                    df['source_file'] = Path(measurement_file).name
+                    df['equipment_type'] = 'Toyo'
+                    channel_data = pd.concat([channel_data, df], ignore_index=True)
+                    
+                    measurement_count += 1
+                    logger.debug(f"Toyo 측정파일 로드: {Path(measurement_file).name} - {len(df):,} 행")
+                    
+            except Exception as e:
+                logger.error(f"Toyo 측정파일 로드 실패 {measurement_file}: {e}")
+                
+        return channel_data
+    
+    def _clean_toyo_capacity_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Toyo CAPACITY.LOG 데이터 정리
+        
+        Args:
+            df: 원본 데이터프레임
+            
+        Returns:
+            정리된 데이터프레임
+        """
+        try:
+            # 예상 컬럼들
+            expected_columns = [
+                'Date', 'Time', 'Condition', 'Mode', 'Cycle', 'TotlCycle', 
+                'Cap[mAh]', 'PassTime', 'TotlPassTime', 'Pow[mWh]', 
+                'AveVolt[V]', 'PeakVolt[V]', 'col12', 'PeakTemp[Deg]', 
+                'Ocv', 'col15', 'Finish', 'DchCycle', 'PassedDate'
+            ]
+            
+            # 컬럼 수가 예상과 다르면 조정
+            if len(df.columns) > len(expected_columns):
+                # 추가 컬럼들 제거
+                df = df.iloc[:, :len(expected_columns)]
+                logger.warning(f"CAPACITY.LOG에서 추가 컬럼 제거됨: {len(df.columns) - len(expected_columns)}개")
+            elif len(df.columns) < len(expected_columns):
+                # 부족한 컬럼들 채우기
+                for i in range(len(df.columns), len(expected_columns)):
+                    df[f'col{i}'] = np.nan
+            
+            # 컬럼명 설정
+            df.columns = expected_columns[:len(df.columns)]
+            
+            # 데이터 타입 변환
+            numeric_columns = ['Cycle', 'TotlCycle', 'Cap[mAh]', 'Pow[mWh]', 
+                             'AveVolt[V]', 'PeakVolt[V]', 'PeakTemp[Deg]', 'Ocv']
+            
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # mAh를 Ah로 변환
+            if 'Cap[mAh]' in df.columns:
+                df['Chg_Capacity[Ah]'] = df['Cap[mAh]'] / 1000
+                df['Dchg_Capacity[Ah]'] = df['Cap[mAh]'] / 1000
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Toyo CAPACITY 데이터 정리 중 오류: {e}")
+            return df
+    
+    def _clean_toyo_measurement_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Toyo 측정 데이터 정리
+        
+        Args:
+            df: 원본 데이터프레임
+            
+        Returns:
+            정리된 데이터프레임
+        """
+        try:
+            # 첫 번째 행이 헤더인지 확인
+            if len(df) > 0:
+                first_row = df.iloc[0]
+                if any('Date' in str(val) or 'Time' in str(val) for val in first_row if pd.notna(val)):
+                    # 첫 번째 행을 헤더로 사용
+                    df.columns = df.iloc[0]
+                    df = df[1:].reset_index(drop=True)
+            
+            # 예상 컬럼들
+            expected_columns = [
+                'Date', 'Time', 'PassTime[Sec]', 'Voltage[V]', 'Current[mA]',
+                'col5', 'col6', 'Temp1[Deg]', 'col8', 'col9', 'col10', 
+                'Condition', 'Mode', 'Cycle', 'TotlCycle', 'PassedDate', 'Temp1[Deg]'
+            ]
+            
+            # 컬럼 수 조정
+            if len(df.columns) > len(expected_columns):
+                df = df.iloc[:, :len(expected_columns)]
+                logger.warning(f"측정 파일에서 추가 컬럼 제거됨: {len(df.columns) - len(expected_columns)}개")
+            elif len(df.columns) < len(expected_columns):
+                for i in range(len(df.columns), len(expected_columns)):
+                    df[f'col{i}'] = np.nan
+            
+            # 컬럼명 설정
+            df.columns = expected_columns[:len(df.columns)]
+            
+            # 데이터 타입 변환
+            numeric_columns = ['PassTime[Sec]', 'Voltage[V]', 'Current[mA]', 
+                             'Temp1[Deg]', 'Cycle', 'TotlCycle', 'PassedDate']
+            
+            for col in numeric_columns:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # 전압을 uV로 변환 (PNE와 일치)
+            if 'Voltage[V]' in df.columns:
+                df['Voltage[uV]'] = df['Voltage[V]'] * 1000000
+            
+            # 전류를 uA로 변환 (PNE와 일치)
+            if 'Current[mA]' in df.columns:
+                df['Current[uA]'] = df['Current[mA]'] * 1000
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Toyo 측정 데이터 정리 중 오류: {e}")
+            return df
         logger.info(f"총 파일/폴더 수: {len(all_files)}")
         
         if self.equipment_type == 'PNE':
@@ -1552,37 +1937,285 @@ class BatteryPatternAnalyzer:
     
     def run_analysis(self, data_path, output_path: str = "analysis_output") -> Dict[str, Any]:
         """
-        범용 배터리 패턴 분석 실행 (단일/다중 경로 자동 감지)
+        다중 채널 배터리 패턴 분석 실행
         
         Args:
-            data_path: 데이터 경로 (문자열: 단일 경로, 리스트: 다중 경로)
+            data_path: 데이터 경로
             output_path: 출력 디렉토리
             
         Returns:
-            분석 결과
+            분석 결과 (채널별 구분 포함)
         """
-        # 입력 타입 감지 및 적절한 분석 메서드 호출
-        if isinstance(data_path, list):
-            # 다중 경로 처리
-            if len(data_path) == 0:
-                print("[ERROR] 빈 경로 리스트입니다.")
-                return {}
-            elif len(data_path) == 1:
-                print("[INFO] 리스트에 경로가 1개만 있어 단일 경로로 처리합니다.")
-                return self._run_single_path_analysis(data_path[0], output_path)
-            else:
-                print(f"[MULTI] 다중 경로 분석 모드 ({len(data_path)}개 경로)")
-                return self._run_multi_path_analysis(data_path, output_path)
+        logger.info("=== 다중 채널 배터리 패턴 분석 시작 ===")
         
-        elif isinstance(data_path, str):
-            # 단일 경로 처리
-            print("[SINGLE] 단일 경로 분석 모드")
-            return self._run_single_path_analysis(data_path, output_path)
+        try:
+            # 채널 감지
+            channels = self.detect_channels(data_path)
+            
+            if not channels:
+                logger.error("채널을 찾을 수 없습니다.")
+                return {'error': 'No channels detected'}
+            
+            # 전체 데이터 로드 (채널별 구분 포함)
+            data = self.load_and_concatenate_data(data_path)
+            
+            if data.empty:
+                logger.error("로드된 데이터가 없습니다.")
+                return {'error': 'No data loaded'}
+            
+            # 결과 저장용 딕셔너리
+            results = {
+                'channels': {},
+                'cross_channel_analysis': {},
+                'summary': {
+                    'total_channels': len(channels),
+                    'channel_list': list(channels.keys()),
+                    'is_multi_channel': self.is_multi_channel,
+                    'data_shape': data.shape,
+                    'analysis_timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+            }
+            
+            # 각 채널별로 개별 분석
+            for channel_id in channels.keys():
+                logger.info(f"채널 {channel_id} 분석 시작...")
+                
+                channel_data = data[data['channel_id'] == channel_id].copy()
+                
+                if not channel_data.empty:
+                    channel_result = self._analyze_single_channel(channel_id, channel_data, output_path)
+                    results['channels'][channel_id] = channel_result
+                    
+                    logger.info(f"채널 {channel_id} 분석 완료")
+                else:
+                    logger.warning(f"채널 {channel_id}: 데이터 없음")
+                    results['channels'][channel_id] = {'error': 'No data'}
+            
+            # 다중 채널인 경우 교차 분석
+            if self.is_multi_channel:
+                logger.info("교차 채널 분석 시작...")
+                results['cross_channel_analysis'] = self._perform_cross_channel_analysis(data, channels)
+                logger.info("교차 채널 분석 완료")
+            
+            # 전체 데이터 추가
+            results['data'] = data
+            
+            logger.info("=== 다중 채널 배터리 패턴 분석 완료 ===")
+            return results
+            
+        except Exception as e:
+            logger.error(f"분석 중 오류 발생: {e}")
+            return {'error': str(e)}
         
         else:
-            print(f"[ERROR] 지원되지 않는 입력 타입: {type(data_path)}")
-            print("   문자열(단일 경로) 또는 리스트(다중 경로)를 입력하세요.")
-            return {}
+            logger.error(f"지원되지 않는 입력 타입: {type(data_path)}")
+            return {'error': f'Unsupported input type: {type(data_path)}'}
+    
+    def _analyze_single_channel(self, channel_id: str, channel_data: pd.DataFrame, output_path: str) -> Dict[str, Any]:
+        """
+        단일 채널 분석
+        
+        Args:
+            channel_id: 채널 ID
+            channel_data: 채널 데이터
+            output_path: 출력 경로
+            
+        Returns:
+            채널 분석 결과
+        """
+        try:
+            # 기존 분석 로직 재사용
+            self.equipment_type = channel_data['equipment_type'].iloc[0] if not channel_data.empty else 'Unknown'
+            
+            # 용량 분석
+            capacity_analysis = self._analyze_capacity(channel_data)
+            
+            # 패턴 분석
+            if self.equipment_type == 'PNE':
+                pattern_analysis = self._analyze_pne_patterns(channel_data)
+            elif self.equipment_type == 'Toyo':
+                pattern_analysis = self._analyze_toyo_patterns(channel_data)
+            else:
+                pattern_analysis = {}
+            
+            # 시각화 생성
+            visualization_results = self._create_channel_visualizations(channel_id, channel_data, output_path)
+            
+            return {
+                'channel_id': channel_id,
+                'equipment_type': self.equipment_type,
+                'data_shape': channel_data.shape,
+                'capacity_analysis': capacity_analysis,
+                'pattern_analysis': pattern_analysis,
+                'visualizations': visualization_results,
+                'data_quality': {
+                    'total_rows': len(channel_data),
+                    'null_count': channel_data.isnull().sum().sum(),
+                    'source_files': channel_data['source_file'].unique().tolist()
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"채널 {channel_id} 분석 중 오류: {e}")
+            return {'error': str(e)}
+    
+    def _perform_cross_channel_analysis(self, data: pd.DataFrame, channels: Dict) -> Dict[str, Any]:
+        """
+        교차 채널 분석
+        
+        Args:
+            data: 전체 데이터
+            channels: 채널 정보
+            
+        Returns:
+            교차 분석 결과
+        """
+        try:
+            cross_analysis = {}
+            
+            # 채널별 통계 비교
+            channel_stats = {}
+            for channel_id in channels.keys():
+                channel_data = data[data['channel_id'] == channel_id]
+                
+                if not channel_data.empty:
+                    # 기본 통계
+                    stats = {
+                        'row_count': len(channel_data),
+                        'equipment_type': channel_data['equipment_type'].iloc[0],
+                        'source_files': channel_data['source_file'].unique().tolist()
+                    }
+                    
+                    # 용량 정보 (Toyo의 경우)
+                    if 'Cap[mAh]' in channel_data.columns:
+                        cap_data = channel_data['Cap[mAh]'].dropna()
+                        if not cap_data.empty:
+                            stats.update({
+                                'capacity_mean': cap_data.mean(),
+                                'capacity_max': cap_data.max(),
+                                'capacity_min': cap_data.min(),
+                                'capacity_std': cap_data.std(),
+                                'cycle_count': len(cap_data)
+                            })
+                    
+                    # 전압 정보
+                    voltage_cols = [col for col in channel_data.columns if 'Voltage' in col or 'Volt' in col]
+                    if voltage_cols:
+                        voltage_col = voltage_cols[0]
+                        volt_data = pd.to_numeric(channel_data[voltage_col], errors='coerce').dropna()
+                        if not volt_data.empty:
+                            stats.update({
+                                'voltage_mean': volt_data.mean(),
+                                'voltage_max': volt_data.max(),
+                                'voltage_min': volt_data.min(),
+                                'voltage_std': volt_data.std()
+                            })
+                    
+                    channel_stats[channel_id] = stats
+            
+            cross_analysis['channel_statistics'] = channel_stats
+            
+            # 채널 간 성능 비교 (용량 기준)
+            if len(channel_stats) > 1:
+                capacity_comparison = {}
+                for ch_id, stats in channel_stats.items():
+                    if 'capacity_mean' in stats:
+                        capacity_comparison[ch_id] = {
+                            'mean_capacity': stats['capacity_mean'],
+                            'cycle_count': stats.get('cycle_count', 0),
+                            'capacity_retention': stats['capacity_min'] / stats['capacity_max'] * 100 if stats.get('capacity_max', 0) > 0 else 0
+                        }
+                
+                if capacity_comparison:
+                    # 최고/최저 성능 채널 식별
+                    best_channel = max(capacity_comparison.keys(), key=lambda x: capacity_comparison[x]['mean_capacity'])
+                    worst_channel = min(capacity_comparison.keys(), key=lambda x: capacity_comparison[x]['mean_capacity'])
+                    
+                    cross_analysis['performance_comparison'] = {
+                        'capacity_comparison': capacity_comparison,
+                        'best_performing_channel': best_channel,
+                        'worst_performing_channel': worst_channel,
+                        'performance_spread': capacity_comparison[best_channel]['mean_capacity'] - capacity_comparison[worst_channel]['mean_capacity']
+                    }
+            
+            # 데이터 품질 비교
+            quality_comparison = {}
+            for ch_id, stats in channel_stats.items():
+                quality_comparison[ch_id] = {
+                    'data_completeness': (stats['row_count'] - data[data['channel_id'] == ch_id].isnull().sum().sum()) / stats['row_count'] * 100 if stats['row_count'] > 0 else 0,
+                    'file_count': len(stats['source_files'])
+                }
+            
+            cross_analysis['data_quality_comparison'] = quality_comparison
+            
+            return cross_analysis
+            
+        except Exception as e:
+            logger.error(f"교차 채널 분석 중 오류: {e}")
+            return {'error': str(e)}
+    
+    def _create_channel_visualizations(self, channel_id: str, channel_data: pd.DataFrame, output_path: str) -> Dict[str, Any]:
+        """
+        채널별 시각화 생성
+        
+        Args:
+            channel_id: 채널 ID
+            channel_data: 채널 데이터
+            output_path: 출력 경로
+            
+        Returns:
+            시각화 결과
+        """
+        try:
+            vis_results = {}
+            
+            # 채널별 출력 디렉토리 생성
+            channel_output = Path(output_path) / f"channel_{channel_id}"
+            channel_output.mkdir(parents=True, exist_ok=True)
+            
+            # 기본 시각화들 (기존 로직 재사용)
+            if 'Cap[mAh]' in channel_data.columns:
+                # 용량 트렌드 플롯
+                fig, ax = plt.subplots(figsize=(12, 6))
+                cap_data = channel_data['Cap[mAh]'].dropna()
+                if not cap_data.empty:
+                    ax.plot(range(len(cap_data)), cap_data, 'b-o', markersize=3)
+                    ax.set_title(f'Channel {channel_id} - Capacity Trend')
+                    ax.set_xlabel('Cycle')
+                    ax.set_ylabel('Capacity (mAh)')
+                    ax.grid(True, alpha=0.3)
+                    
+                    plot_path = channel_output / f"{channel_id}_capacity_trend.png"
+                    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    
+                    vis_results['capacity_trend'] = str(plot_path)
+            
+            # 전압 플롯
+            voltage_cols = [col for col in channel_data.columns if 'Voltage' in col or 'Volt' in col]
+            if voltage_cols:
+                voltage_col = voltage_cols[0]
+                volt_data = pd.to_numeric(channel_data[voltage_col], errors='coerce').dropna()
+                
+                if not volt_data.empty and len(volt_data) > 1:
+                    fig, ax = plt.subplots(figsize=(12, 6))
+                    ax.plot(range(len(volt_data)), volt_data, 'r-', alpha=0.7)
+                    ax.set_title(f'Channel {channel_id} - Voltage Profile')
+                    ax.set_xlabel('Data Point')
+                    ax.set_ylabel('Voltage')
+                    ax.grid(True, alpha=0.3)
+                    
+                    plot_path = channel_output / f"{channel_id}_voltage_profile.png"
+                    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    
+                    vis_results['voltage_profile'] = str(plot_path)
+            
+            return vis_results
+            
+        except Exception as e:
+            logger.error(f"채널 {channel_id} 시각화 생성 중 오류: {e}")
+            return {'error': str(e)}
 
     def run_multi_path_analysis(self, data_paths: List[str], output_dir: str = "analysis_output") -> Dict[str, Any]:
         """

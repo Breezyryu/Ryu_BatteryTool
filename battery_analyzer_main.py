@@ -305,17 +305,19 @@ class BatteryAnalyzerMain:
                 fallback += f".{extension}"
             return fallback
     
-    def create_output_directory(self, battery_info: Dict) -> Path:
+    def create_output_directory(self, battery_info: Dict, is_multi_channel: bool = False) -> Path:
         """
-        출력 디렉토리 생성
+        출력 디렉토리 생성 (다중 채널 지원)
         
         Args:
             battery_info: 배터리 정보
+            is_multi_channel: 다중 채널 여부
             
         Returns:
             생성된 디렉토리 경로
         """
-        dir_name = self.generate_output_filename(battery_info, 'analysis')
+        analysis_type = 'MultiChannel' if is_multi_channel else 'analysis'
+        dir_name = self.generate_output_filename(battery_info, analysis_type)
         output_dir = self.output_base_dir / dir_name
         
         # Create subdirectories
@@ -326,20 +328,25 @@ class BatteryAnalyzerMain:
         (output_dir / 'visualizations' / 'domain').mkdir(parents=True, exist_ok=True)
         (output_dir / 'visualizations' / 'statistical').mkdir(parents=True, exist_ok=True)
         
+        # 다중 채널인 경우 추가 디렉토리
+        if is_multi_channel:
+            (output_dir / 'cross_channel_analysis').mkdir(parents=True, exist_ok=True)
+            (output_dir / 'channel_reports').mkdir(parents=True, exist_ok=True)
+        
         logger.info(f"Created output directory: {output_dir}")
         return output_dir
     
     def analyze_single_path(self, path: str) -> Dict[str, Any]:
         """
-        단일 경로 데이터 분석
+        단일 경로 다중 채널 데이터 분석
         
         Args:
             path: 데이터 경로
             
         Returns:
-            분석 결과
+            분석 결과 (다중 채널 지원)
         """
-        logger.info(f"Analyzing single path: {path}")
+        logger.info(f"Analyzing single path with multi-channel support: {path}")
         
         # Check if path exists
         if not os.path.exists(path):
@@ -351,58 +358,111 @@ class BatteryAnalyzerMain:
         # Extract battery info
         battery_info = self.extract_battery_info(path)
         
-        # Create output directory
-        output_dir = self.create_output_directory(battery_info)
+        # Detect channels first
+        channels = self.analyzer.detect_channels(path)
+        is_multi_channel = len(channels) > 1
+        
+        # Create output directory with multi-channel support
+        output_dir = self.create_output_directory(battery_info, is_multi_channel)
         
         # Update analyzer with battery info
         self.analyzer.capacity_info = battery_info
         
         try:
-            # Run pattern analysis
-            result = self.analyzer.run_analysis(path, output_path=str(output_dir / 'data'))
+            # Run multi-channel pattern analysis
+            result = self.analyzer.run_analysis(path, output_path=str(output_dir))
             
-            # Save processed data with new naming
-            if 'data' in result:
-                data_filename = self.generate_output_filename(
-                    battery_info, 'processed_data', 'csv'
-                )
-                data_path = output_dir / 'data' / data_filename
-                result['data'].to_csv(data_path, index=False)
-                logger.info(f"Saved processed data: {data_path}")
+            # Process results
+            if 'channels' in result:
+                logger.info(f"처리된 채널: {len(result['channels'])}개")
                 
-                # Run integrated reporter with custom output directory
-                reporter = IntegratedBatteryReporter(output_dir=str(output_dir))
+                # Save individual channel data
+                for channel_id, channel_result in result['channels'].items():
+                    if 'error' not in channel_result:
+                        # Create channel-specific data file
+                        channel_data_filename = self.generate_output_filename(
+                            battery_info, f'channel_{channel_id}_data', 'csv'
+                        )
+                        
+                        # Save channel data if available
+                        channel_data = result.get('data')
+                        if channel_data is not None and not channel_data.empty:
+                            channel_specific_data = channel_data[channel_data['channel_id'] == channel_id]
+                            if not channel_specific_data.empty:
+                                channel_data_path = output_dir / 'data' / channel_data_filename
+                                channel_specific_data.to_csv(channel_data_path, index=False, encoding='utf-8')
+                                logger.info(f"Saved channel {channel_id} data: {channel_data_path}")
                 
-                # Pass battery info to reporter for file naming
-                reporter.battery_info = battery_info
+                # Save cross-channel analysis if available
+                if 'cross_channel_analysis' in result and result['cross_channel_analysis']:
+                    cross_analysis_filename = self.generate_output_filename(
+                        battery_info, 'cross_channel_analysis', 'json'
+                    )
+                    cross_analysis_path = output_dir / 'cross_channel_analysis' / cross_analysis_filename
+                    
+                    with open(cross_analysis_path, 'w', encoding='utf-8') as f:
+                        json.dump(result['cross_channel_analysis'], f, indent=2, ensure_ascii=False, default=str)
+                    
+                    logger.info(f"Saved cross-channel analysis: {cross_analysis_path}")
                 
-                # Run comprehensive analysis
-                report_results = reporter.run_comprehensive_analysis(
-                    data_path=str(data_path),
-                    parallel=True,
-                    max_workers=3
-                )
-                
-                result['report'] = report_results
+                # Save complete dataset
+                if 'data' in result and result['data'] is not None and not result['data'].empty:
+                    complete_data_filename = self.generate_output_filename(
+                        battery_info, 'complete_dataset', 'csv'
+                    )
+                    complete_data_path = output_dir / 'data' / complete_data_filename
+                    result['data'].to_csv(complete_data_path, index=False, encoding='utf-8')
+                    logger.info(f"Saved complete dataset: {complete_data_path}")
+                    
+                    # Run integrated reporter if data exists
+                    try:
+                        reporter = IntegratedBatteryReporter(output_dir=str(output_dir))
+                        reporter.battery_info = battery_info
+                        
+                        # Run analysis with complete dataset
+                        report_results = reporter.run_comprehensive_analysis(
+                            data_path=str(complete_data_path),
+                            parallel=True,
+                            max_workers=3
+                        )
+                        
+                        result['integrated_report'] = report_results
+                        logger.info("Integrated report generated successfully")
+                        
+                    except Exception as e:
+                        logger.error(f"Integrated report generation failed: {e}")
+                        result['integrated_report_error'] = str(e)
             
+            # Add metadata
             result['battery_info'] = battery_info
             result['output_dir'] = str(output_dir)
+            result['is_multi_channel'] = is_multi_channel
+            result['analysis_type'] = 'multi_channel'
             
-            # Save analysis summary
+            # Save comprehensive summary
             summary_filename = self.generate_output_filename(
-                battery_info, 'summary', 'json'
+                battery_info, 'multi_channel_summary', 'json'
             )
             summary_path = output_dir / 'reports' / summary_filename
             
-            with open(summary_path, 'w', encoding='utf-8') as f:
-                json.dump(result, f, indent=2, ensure_ascii=False, default=str)
+            # Create a summary without the large data field for JSON serialization
+            summary_result = {k: v for k, v in result.items() if k != 'data'}
             
-            logger.info(f"Analysis completed for {path}")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                json.dump(summary_result, f, indent=2, ensure_ascii=False, default=str)
+            
+            # Create multi-channel HTML report
+            if is_multi_channel:
+                html_report_path = self.create_multi_channel_report(result, output_dir)
+                if html_report_path:
+                    result['html_report'] = html_report_path
+            
+            logger.info(f"Multi-channel analysis completed for {path}")
             return result
             
         except Exception as e:
-            logger.error(f"Error analyzing {path}: {str(e)}")
-            return {'error': str(e), 'battery_info': battery_info}
+            logger.error(f"Error in multi-channel analysis for {path}: {str(e)}")
+            return {'error': str(e), 'battery_info': battery_info, 'path': path}
     
     def analyze_multiple_paths(self, paths: List[str]) -> Dict[str, Any]:
         """
@@ -640,6 +700,260 @@ class BatteryAnalyzerMain:
         """
         
         return html
+    
+    def create_multi_channel_report(self, result: Dict[str, Any], output_dir: Path) -> str:
+        """
+        다중 채널 HTML 리포트 생성
+        
+        Args:
+            result: 분석 결과
+            output_dir: 출력 디렉토리
+            
+        Returns:
+            HTML 리포트 파일 경로
+        """
+        if not result.get('is_multi_channel', False):
+            return ""
+        
+        channels = result.get('channels', {})
+        cross_analysis = result.get('cross_channel_analysis', {})
+        summary = result.get('summary', {})
+        
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Multi-Channel Battery Analysis Report</title>
+            <meta charset="UTF-8">
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    margin: 20px;
+                    background-color: #f5f5f5;
+                }}
+                .container {{
+                    max-width: 1400px;
+                    margin: 0 auto;
+                    background-color: white;
+                    padding: 30px;
+                    border-radius: 10px;
+                    box-shadow: 0 0 20px rgba(0,0,0,0.1);
+                }}
+                h1 {{
+                    color: #2c3e50;
+                    text-align: center;
+                    border-bottom: 3px solid #3498db;
+                    padding-bottom: 10px;
+                }}
+                h2 {{
+                    color: #34495e;
+                    border-bottom: 2px solid #bdc3c7;
+                    padding-bottom: 5px;
+                }}
+                .summary-grid {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 20px;
+                    margin: 20px 0;
+                }}
+                .summary-card {{
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 20px;
+                    border-radius: 10px;
+                    text-align: center;
+                }}
+                .summary-value {{
+                    font-size: 2em;
+                    font-weight: bold;
+                }}
+                .summary-label {{
+                    font-size: 0.9em;
+                    opacity: 0.9;
+                    margin-top: 5px;
+                }}
+                .channel-section {{
+                    margin: 20px 0;
+                    padding: 15px;
+                    background-color: #f8f9fa;
+                    border-radius: 8px;
+                    border-left: 4px solid #3498db;
+                }}
+                .channel-name {{
+                    font-size: 1.3em;
+                    font-weight: bold;
+                    color: #2c3e50;
+                    margin-bottom: 10px;
+                }}
+                .channel-stats {{
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 15px;
+                    margin: 15px 0;
+                }}
+                .stat-item {{
+                    background: white;
+                    padding: 10px;
+                    border-radius: 5px;
+                    border: 1px solid #e0e0e0;
+                }}
+                .stat-label {{
+                    font-weight: bold;
+                    color: #666;
+                    font-size: 0.9em;
+                }}
+                .stat-value {{
+                    font-size: 1.2em;
+                    color: #2c3e50;
+                    margin-top: 5px;
+                }}
+                .performance-section {{
+                    background-color: #e8f5e8;
+                    padding: 15px;
+                    border-radius: 8px;
+                    margin: 20px 0;
+                }}
+                .best-channel {{
+                    color: #27ae60;
+                    font-weight: bold;
+                }}
+                .worst-channel {{
+                    color: #e74c3c;
+                    font-weight: bold;
+                }}
+                .timestamp {{
+                    text-align: center;
+                    color: #7f8c8d;
+                    margin: 10px 0;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🔋 Multi-Channel Battery Analysis Report</h1>
+                <p class="timestamp">Generated: {summary.get('analysis_timestamp', 'Unknown')}</p>
+                
+                <div class="summary-grid">
+                    <div class="summary-card">
+                        <div class="summary-value">{summary.get('total_channels', 0)}</div>
+                        <div class="summary-label">Total Channels</div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="summary-value">{summary.get('data_shape', [0, 0])[0]:,}</div>
+                        <div class="summary-label">Total Data Points</div>
+                    </div>
+                </div>
+                
+                <h2>📊 Channel Analysis Results</h2>
+        """
+        
+        # Add channel details
+        for channel_id, channel_result in channels.items():
+            if 'error' not in channel_result:
+                equipment_type = channel_result.get('equipment_type', 'Unknown')
+                data_shape = channel_result.get('data_shape', [0, 0])
+                data_quality = channel_result.get('data_quality', {})
+                
+                html_content += f"""
+                <div class="channel-section">
+                    <div class="channel-name">📈 {channel_id}</div>
+                    <div class="channel-stats">
+                        <div class="stat-item">
+                            <div class="stat-label">Equipment Type</div>
+                            <div class="stat-value">{equipment_type}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Data Points</div>
+                            <div class="stat-value">{data_shape[0]:,}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Source Files</div>
+                            <div class="stat-value">{len(data_quality.get('source_files', []))}</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-label">Data Quality</div>
+                            <div class="stat-value">{(100 - (data_quality.get('null_count', 0) / max(data_quality.get('total_rows', 1), 1) * 100)):.1f}%</div>
+                        </div>
+                    </div>
+                </div>
+                """
+            else:
+                html_content += f"""
+                <div class="channel-section">
+                    <div class="channel-name">❌ {channel_id}</div>
+                    <div style="color: red;">Error: {channel_result.get('error', 'Unknown error')}</div>
+                </div>
+                """
+        
+        # Add cross-channel analysis if available
+        if cross_analysis:
+            performance_comp = cross_analysis.get('performance_comparison', {})
+            if performance_comp:
+                best_channel = performance_comp.get('best_performing_channel', 'N/A')
+                worst_channel = performance_comp.get('worst_performing_channel', 'N/A')
+                performance_spread = performance_comp.get('performance_spread', 0)
+                
+                html_content += f"""
+                <h2>⚡ Cross-Channel Performance Comparison</h2>
+                <div class="performance-section">
+                    <p><strong>Best Performing Channel:</strong> <span class="best-channel">{best_channel}</span></p>
+                    <p><strong>Worst Performing Channel:</strong> <span class="worst-channel">{worst_channel}</span></p>
+                    <p><strong>Performance Spread:</strong> {performance_spread:.2f} mAh</p>
+                </div>
+                """
+            
+            # Channel statistics table
+            channel_stats = cross_analysis.get('channel_statistics', {})
+            if channel_stats:
+                html_content += """
+                <h2>📋 Channel Statistics Summary</h2>
+                <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                    <thead>
+                        <tr style="background-color: #3498db; color: white;">
+                            <th style="padding: 12px; text-align: left;">Channel</th>
+                            <th style="padding: 12px; text-align: right;">Capacity (mAh)</th>
+                            <th style="padding: 12px; text-align: right;">Cycles</th>
+                            <th style="padding: 12px; text-align: right;">Voltage (V)</th>
+                            <th style="padding: 12px; text-align: right;">Data Quality</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                """
+                
+                for ch_id, stats in channel_stats.items():
+                    capacity_mean = stats.get('capacity_mean', 0)
+                    cycle_count = stats.get('cycle_count', 0)
+                    voltage_mean = stats.get('voltage_mean', 0)
+                    row_count = stats.get('row_count', 0)
+                    
+                    html_content += f"""
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 12px;"><strong>{ch_id}</strong></td>
+                        <td style="padding: 12px; text-align: right;">{capacity_mean:.2f}</td>
+                        <td style="padding: 12px; text-align: right;">{cycle_count}</td>
+                        <td style="padding: 12px; text-align: right;">{voltage_mean/1000000 if voltage_mean > 1000 else voltage_mean:.2f}</td>
+                        <td style="padding: 12px; text-align: right;">{row_count:,}</td>
+                    </tr>
+                    """
+                
+                html_content += """
+                    </tbody>
+                </table>
+                """
+        
+        html_content += """
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Save HTML report
+        html_path = output_dir / 'multi_channel_report.html'
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        logger.info(f"Multi-channel HTML report created: {html_path}")
+        return str(html_path)
     
     def run(self, paths: List[str]) -> Dict[str, Any]:
         """
